@@ -62,8 +62,8 @@ int32_t ida_iatt_combine(ida_local_t * local, struct iatt * dst, struct iatt * s
         (dst->ia_uid != src->ia_uid) ||
         (dst->ia_gid != src->ia_gid) ||
         (dst->ia_rdev != src->ia_rdev) ||
-        (dst->ia_size != src->ia_size) ||
-        (dst->ia_blocks != src->ia_blocks))
+        (dst->ia_size != src->ia_size))
+//        (dst->ia_blocks != src->ia_blocks))
     {
         return EIO;
     }
