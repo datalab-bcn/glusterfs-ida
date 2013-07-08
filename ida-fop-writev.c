@@ -181,6 +181,7 @@ static int32_t ida_rebuild_writev(ida_local_t * local, uintptr_t mask, ida_args_
 static void ida_finish_writev(ida_local_t * local)
 {
     off_t size;
+    ssize_t final;
 
     if (local->args.writev.unlock)
     {
@@ -188,7 +189,13 @@ static void ida_finish_writev(ida_local_t * local)
         size += local->private->block_size - (size + local->private->block_size - 1) % local->private->block_size - 1;
         size /= local->private->fragments;
 
-        ida_flow_xattr_unlock(local, NULL, NULL, local->args.writev.fd, local->args.writev.offset, size, local->cbk->writev.attr_post.ia_size);
+        final = 0;
+        if (local->cbk != NULL)
+        {
+            final = local->cbk->writev.attr_post.ia_size;
+        }
+
+        ida_flow_xattr_unlock(local, NULL, NULL, local->args.writev.fd, local->args.writev.offset, size, final);
     }
     else
     {

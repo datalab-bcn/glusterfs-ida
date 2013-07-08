@@ -126,9 +126,17 @@ static int32_t ida_rebuild_truncate(ida_local_t * local, uintptr_t mask, ida_arg
 
 static void ida_finish_truncate(ida_local_t * local)
 {
+    ssize_t final;
+
     if (local->args.truncate.unlock)
     {
-        ida_flow_xattr_unlock(local, NULL, &local->args.truncate.loc, local->args.truncate.fd, 0, 0, local->cbk->truncate.attr_post.ia_size);
+        final = 0;
+        if (local->cbk != NULL)
+        {
+            final = local->cbk->truncate.attr_post.ia_size;
+        }
+
+        ida_flow_xattr_unlock(local, NULL, &local->args.truncate.loc, local->args.truncate.fd, 0, 0, final);
     }
     else
     {
