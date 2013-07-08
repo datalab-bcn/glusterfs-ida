@@ -215,7 +215,7 @@ int32_t ida_symlink(call_frame_t * frame, xlator_t * this, const char * name, lo
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_symlink, 0, 0, ida_callback_symlink);
+    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_symlink, IDA_EXECUTE_MAX, 0, ida_callback_symlink);
     if (unlikely(error != 0))
     {
         IDA_UNWIND(symlink, frame, -1, error, NULL, NULL, NULL, NULL, NULL);

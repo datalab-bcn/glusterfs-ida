@@ -251,7 +251,7 @@ int32_t ida_rename(call_frame_t * frame, xlator_t * this, loc_t * old_loc, loc_t
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, old_loc->inode, &ida_manager_rename, 0, 0, ida_callback_rename);
+    error = ida_nest(&local, this, frame, old_loc->inode, &ida_manager_rename, IDA_EXECUTE_MAX, 0, ida_callback_rename);
     if (unlikely(error != 0))
     {
         IDA_UNWIND(rename, frame, -1, error, NULL, NULL, NULL, NULL, NULL, NULL);

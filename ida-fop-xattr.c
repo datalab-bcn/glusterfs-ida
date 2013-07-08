@@ -466,7 +466,7 @@ static int32_t ida_setxattr_common(call_frame_t * frame, xlator_t * this, loc_t 
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_setxattr, 0, 0, ida_callback_setxattr);
+    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_setxattr, IDA_EXECUTE_MAX, 0, ida_callback_setxattr);
     if (unlikely(error != 0))
     {
         if (fd == NULL)
@@ -627,7 +627,7 @@ int32_t ida_removexattr(call_frame_t * frame, xlator_t * this, loc_t * loc, cons
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_removexattr, 0, 0, ida_callback_removexattr);
+    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_removexattr, IDA_EXECUTE_MAX, 0, ida_callback_removexattr);
     if (unlikely(error != 0))
     {
         IDA_UNWIND(removexattr, frame, -1, error, NULL);
@@ -843,7 +843,7 @@ static int32_t ida_xattrop_common(call_frame_t * frame, xlator_t * this, inode_t
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, inode, &ida_manager_xattrop, 0, 0, ida_callback_xattrop);
+    error = ida_nest(&local, this, frame, inode, &ida_manager_xattrop, IDA_EXECUTE_MAX, 0, ida_callback_xattrop);
     if (unlikely(error != 0))
     {
         if (fd == NULL)

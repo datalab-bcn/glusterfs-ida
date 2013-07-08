@@ -199,7 +199,7 @@ int32_t ida_lk(call_frame_t * frame, xlator_t * this, fd_t * fd, int32_t cmd, st
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, fd->inode, &ida_manager_lk, 0, 0, ida_callback_lk);
+    error = ida_nest(&local, this, frame, fd->inode, &ida_manager_lk, IDA_EXECUTE_MAX, 0, ida_callback_lk);
     if (unlikely(error != 0))
     {
         IDA_UNWIND(lk, frame, -1, error, NULL, NULL);
@@ -389,7 +389,7 @@ static int32_t ida_inodelk_common(call_frame_t * frame, xlator_t * this, const c
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, inode, &ida_manager_inodelk, 0, 0, ida_callback_inodelk);
+    error = ida_nest(&local, this, frame, inode, &ida_manager_inodelk, IDA_EXECUTE_MAX, 0, ida_callback_inodelk);
     if (unlikely(error != 0))
     {
         if (fd == NULL)
@@ -600,7 +600,7 @@ static int32_t ida_entrylk_common(call_frame_t * frame, xlator_t * this, const c
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, inode, &ida_manager_entrylk, 0, 0, ida_callback_entrylk);
+    error = ida_nest(&local, this, frame, inode, &ida_manager_entrylk, IDA_EXECUTE_MAX, 0, ida_callback_entrylk);
     if (unlikely(error != 0))
     {
         if (fd == NULL)

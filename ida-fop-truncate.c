@@ -259,7 +259,7 @@ static int32_t ida_truncate_common(call_frame_t * frame, xlator_t * this, inode_
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, inode, &ida_manager_truncate, 0, 0, ida_callback_truncate);
+    error = ida_nest(&local, this, frame, inode, &ida_manager_truncate, IDA_EXECUTE_MAX, 0, ida_callback_truncate);
     if (unlikely(error != 0))
     {
         if (fd == NULL)

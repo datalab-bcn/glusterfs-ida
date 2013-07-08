@@ -190,7 +190,7 @@ int32_t ida_rmdir(call_frame_t * frame, xlator_t * this, loc_t * loc, int32_t fl
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_rmdir, 0, 0, ida_callback_rmdir);
+    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_rmdir, IDA_EXECUTE_MAX, 0, ida_callback_rmdir);
     if (unlikely(error != 0))
     {
         IDA_UNWIND(rmdir, frame, -1, error, NULL, NULL, NULL);

@@ -209,7 +209,7 @@ int32_t ida_mkdir(call_frame_t * frame, xlator_t * this, loc_t * loc, mode_t mod
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_mkdir, 0, 0, ida_callback_mkdir);
+    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_mkdir, IDA_EXECUTE_MAX, 0, ida_callback_mkdir);
     if (unlikely(error != 0))
     {
         IDA_UNWIND(mkdir, frame, -1, error, NULL, NULL, NULL, NULL, NULL);

@@ -211,7 +211,7 @@ int32_t ida_mknod(call_frame_t * frame, xlator_t * this, loc_t * loc, mode_t mod
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_mknod, 0, 0, ida_callback_mknod);
+    error = ida_nest(&local, this, frame, loc->inode, &ida_manager_mknod, IDA_EXECUTE_MAX, 0, ida_callback_mknod);
     if (unlikely(error != 0))
     {
         IDA_UNWIND(mknod, frame, -1, error, NULL, NULL, NULL, NULL, NULL);

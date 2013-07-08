@@ -247,7 +247,7 @@ int32_t ida_link(call_frame_t * frame, xlator_t * this, loc_t * old_loc, loc_t *
     ida_local_t * local;
     int32_t error;
 
-    error = ida_nest(&local, this, frame, new_loc->inode, &ida_manager_link, 0, 0, ida_callback_link);
+    error = ida_nest(&local, this, frame, new_loc->inode, &ida_manager_link, IDA_EXECUTE_MAX, 0, ida_callback_link);
     if (unlikely(error != 0))
     {
         IDA_UNWIND(link, frame, -1, error, NULL, NULL, NULL, NULL, NULL);
