@@ -120,6 +120,11 @@ static int32_t ida_rebuild_lookup(ida_local_t * local, uintptr_t mask, ida_args_
 
     local->inode_ctx->size = args->lookup.attr.ia_size;
 
+    if (args->lookup.xattr == NULL)
+    {
+        return 0;
+    }
+
     data = dict_get(args->lookup.xattr, GF_CONTENT_KEY);
     if (data != NULL)
     {
