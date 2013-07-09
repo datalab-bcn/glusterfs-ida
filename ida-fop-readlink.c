@@ -135,6 +135,7 @@ void ida_execute_readlink(ida_local_t * local, loc_t * loc, size_t size, dict_t 
 {
     int32_t error;
 
+    local->args.readlink.size = size;
     error = ida_loc_assign(local, &local->args.readlink.loc, loc);
     if (likely(error == 0))
     {
