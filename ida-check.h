@@ -22,6 +22,7 @@
 #define __IDA_CHECK_H__
 
 #include <errno.h>
+#include <pthread.h>
 
 #include "logging.h"
 

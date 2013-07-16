@@ -26,7 +26,6 @@ struct ida_xattr_merge_data
 {
     ida_local_t * local;
     dict_t ** dict;
-    int32_t error;
 };
 
 int32_t ida_bit_count(uintptr_t mask)
@@ -103,18 +102,13 @@ int32_t ida_xattr_copy(ida_local_t * local, dict_t ** dst, dict_t * src)
     return (*dst == NULL) ? EIO : 0;
 }
 
-void ida_xattr_merge_add(dict_t * src, char * key, data_t * value, void * arg)
+int ida_xattr_merge_add(dict_t * src, char * key, data_t * value, void * arg)
 {
     struct ida_xattr_merge_data * data;
     data_t * tmp;
     dict_t * dict;
 
     data = arg;
-
-    if (unlikely(data->error != 0))
-    {
-        return;
-    }
 
     dict = *data->dict;
 
@@ -127,9 +121,7 @@ void ida_xattr_merge_add(dict_t * src, char * key, data_t * value, void * arg)
             {
                 gf_log(data->local->xl->name, GF_LOG_WARNING, "key '%s' is different", key);
 
-                data->error = 1;
-
-                return;
+                return -1;
             }
         }
     }
@@ -142,17 +134,17 @@ void ida_xattr_merge_add(dict_t * src, char * key, data_t * value, void * arg)
             *data->dict = dict;
             if (unlikely(dict == NULL))
             {
-                data->error = 1;
-
-                return;
+                return -1;
             }
         }
 
         if (dict_set(dict, key, value) != 0)
         {
-            data->error = 1;
+            return -1;
         }
     }
+
+    return 0;
 }
 
 int32_t ida_xattr_merge(ida_local_t * local, dict_t ** dst, dict_t * src)
@@ -161,9 +153,6 @@ int32_t ida_xattr_merge(ida_local_t * local, dict_t ** dst, dict_t * src)
 
     data.local = local;
     data.dict = dst;
-    data.error = 0;
 
-    dict_foreach(src, ida_xattr_merge_add, &data);
-
-    return (data.error != 0) ? EIO : 0;
+    return (dict_foreach(src, ida_xattr_merge_add, &data) < 0) ? EIO : 0;
 }

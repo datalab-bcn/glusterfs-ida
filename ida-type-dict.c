@@ -24,12 +24,6 @@
 #include "ida-memory.h"
 #include "ida.h"
 
-struct ida_dict_data
-{
-    dict_t * dict;
-    int32_t equal;
-};
-
 //static uint32_t dict_count = 0;
 
 int32_t ida_dict_assign(ida_local_t * local, dict_t ** dst, dict_t * src)
@@ -96,36 +90,28 @@ int32_t ida_dict_data_compare(data_t * dst, data_t * src)
     return memcmp(dst->data, src->data, dst->len);
 }
 
-static void ida_dict_equal_enum(dict_t * dst, char * key, data_t * value, void * arg)
+static int ida_dict_equal_enum(dict_t * dst, char * key, data_t * value, void * arg)
 {
-    struct ida_dict_data * data;
     data_t * tmp;
 
-    data = arg;
-
-    if (unlikely(data->equal == 0))
-    {
-        return;
-    }
-
-    tmp = dict_get(data->dict, key);
+    tmp = dict_get(arg, key);
     if (tmp == NULL)
     {
-        data->equal = 0;
+        return -1;
     }
     else
     {
         if (!ida_dict_special(key) && (ida_dict_data_compare(value, tmp) != 0))
         {
-            data->equal = 0;
+            return -1;
         }
     }
+
+    return 0;
 }
 
 int32_t ida_dict_equal(dict_t * dst, dict_t * src)
 {
-    struct ida_dict_data data;
-
     if (dst == src)
     {
         return 1;
@@ -136,12 +122,7 @@ int32_t ida_dict_equal(dict_t * dst, dict_t * src)
         return 0;
     }
 
-    data.dict = src;
-    data.equal = 1;
-
-    dict_foreach(dst, ida_dict_equal_enum, &data);
-
-    return data.equal;
+    return (dict_foreach(dst, ida_dict_equal_enum, src) == 0);
 }
 
 int32_t ida_dict_set_cow(dict_t ** dst, char * key, data_t * value)
@@ -283,70 +264,54 @@ int32_t ida_dict_del_cow(dict_t ** dst, char * key)
     return 0;
 }
 
-void ida_dict_clean_enum(dict_t * src, char * key, data_t * value, void * arg)
+int ida_dict_clean_enum(dict_t * src, char * key, data_t * value, void * arg)
 {
-    struct ida_dict_data * data;
+    dict_t ** dict;
 
-    data = arg;
-
-    if (unlikely(data->equal == 0))
-    {
-        return;
-    }
+    dict = arg;
 
     if (ida_dict_special(key))
     {
-        if (ida_dict_del_cow(&data->dict, key) != 0)
+        if (ida_dict_del_cow(dict, key) != 0)
         {
-            data->equal = 0;
+            return -1;
         }
     }
+
+    return 0;
 }
 
 int32_t ida_dict_clean_cow(dict_t ** dst)
 {
-    struct ida_dict_data data;
-
-    data.dict = *dst;
-    data.equal = 1;
-
-    dict_foreach(*dst, ida_dict_clean_enum, &data);
-    *dst = data.dict;
-
-    return data.equal - 1;
+    return dict_foreach(*dst, ida_dict_clean_enum, dst);
 }
 
-void ida_dict_combine_enum(dict_t * src, char * key, data_t * value, void * arg)
+int ida_dict_combine_enum(dict_t * src, char * key, data_t * value, void * arg)
 {
-    struct ida_dict_data * data;
 //    dict_t * new;
+    dict_t ** dict;
     data_t * tmp;
 
-    data = arg;
+    dict = arg;
 
-    if (unlikely(data->equal == 0))
-    {
-        return;
-    }
-
-    tmp = dict_get(data->dict, key);
+    tmp = dict_get(*dict, key);
     if (tmp != NULL)
     {
         if (ida_dict_special(key))
         {
             if (value->len != tmp->len)
             {
-                goto failed;
+                return -1;
             }
         }
         else if (ida_dict_data_compare(value, tmp) != 0)
         {
-            goto failed;
+            return -1;
         }
     }
     else
     {
-        goto failed;
+        return -1;
 /*
         if (ida_dict_special(key))
         {
@@ -372,26 +337,15 @@ void ida_dict_combine_enum(dict_t * src, char * key, data_t * value, void * arg)
 */
     }
 
-    return;
-
-failed:
-    data->equal = 0;
+    return 0;
 }
 
 int32_t ida_dict_combine_cow(ida_local_t * local, dict_t ** dst, dict_t * src)
 {
-    struct ida_dict_data data;
-
     if (src == NULL)
     {
         return 0;
     }
 
-    data.dict = *dst;
-    data.equal = 1;
-
-    dict_foreach(src, ida_dict_combine_enum, &data);
-    *dst = data.dict;
-
-    return data.equal - 1;
+    return dict_foreach(src, ida_dict_combine_enum, dst);
 }
