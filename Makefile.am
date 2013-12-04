@@ -1,0 +1,5 @@
+
+MAKEFLAGS = $(AM_MAKEFLAGS)
+
+SUBDIRS = src
+
