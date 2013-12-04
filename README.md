@@ -41,9 +41,12 @@ translator.
 Requirements
 ------------
 
-* Source code of GlusterFS 3.3.0 or later, configured, compiled and installed
+* Source code of GlusterFS 3.4.0 or later, configured, compiled and installed
 * This version requires Intel SSE2 extensions to speed up the encoding (this
   requirement will be removed in the future)
+* The [glusterfs-gfsys](https://forge.gluster.org/disperse/gfsys) library
+* The [glusterfs-dfc](https://forge.gluster.org/disperse/dfc) translator is
+  needed on all bricks
 * The [glusterfs-heal](https://forge.gluster.org/disperse/heal) translator is
   needed on all bricks
 
@@ -51,15 +54,14 @@ Requirements
 Installation
 ------------
 
-* Once the GlusterFS is configured, compiled and installed, edit the Makefile
-  and modify the path to GlusterFS source code in variable *SRCDIR*.
+* Configure, compile and install GlusterFS and glusterfs-gfsys
+* ./autogen.sh
+* ./configure --with-glusterfs=<path to glusterfs> --with-gfsys=<path to gfsys>
 * make
 * make install
 
 This should leave the translator modules into the same place where GlusterFS
 has been installed.
-
-The translator is compiled without any optimization for debugging purposes.
 
 
 Configuration
@@ -170,7 +172,7 @@ Known problems
 --------------
 
 On files being simultaneously read and written by one or more clients without
-any external synchronization between them may result if read failures. This is
+any external synchronization between them may result in read failures. This is
 caused by the possibility that the read operation be performed in different
 order with respect to the writes on each brick. The read needs that at least N
 fragments from N bricks match the version to return a valid result. It's not a
