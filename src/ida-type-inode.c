@@ -18,14 +18,13 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "ida-check.h"
+#include "gfsys.h"
+
 #include "ida-manager.h"
 
 int32_t ida_inode_assign(ida_local_t * local, inode_t ** dst, inode_t * src)
 {
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, src, EINVAL);
     *dst = inode_ref(src);
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, *dst, EINVAL);
 
     return 0;
 }

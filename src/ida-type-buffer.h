@@ -28,7 +28,7 @@
 int32_t ida_buffer_new(ida_local_t * local, ida_buffer_t * dst, uint32_t size);
 int32_t ida_buffer_assign(ida_local_t * local, ida_buffer_t * dst, struct iobref * buffers, struct iovec * vectors, int32_t count);
 void ida_buffer_unassign(ida_buffer_t * dst);
-int32_t ida_buffer_combine(ida_local_t * local, ida_buffer_t * dst, ida_buffer_t * src);
+bool ida_buffer_combine(ida_buffer_t * dst, ida_buffer_t * src);
 int32_t ida_buffer_add_buffer(ida_local_t * local, ida_buffer_t * buffers, uint32_t size);
 int32_t ida_buffer_add_vector(ida_local_t * local, ida_buffer_t * buffers, uint32_t index, void * ptr, uint32_t size);
 

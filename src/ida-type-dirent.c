@@ -18,8 +18,8 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "ida-check.h"
-#include "ida-memory.h"
+#include "gfsys.h"
+
 #include "ida-type-iatt.h"
 #include "ida-type-inode.h"
 #include "ida-type-dict.h"
@@ -27,9 +27,9 @@
 
 void ida_dirent_wipe(gf_dirent_t * dirent)
 {
-    ida_iatt_unassign(&dirent->d_stat);
-    ida_inode_unassign(&dirent->inode);
-    ida_dict_unassign(&dirent->dict);
+    sys_iatt_release(&dirent->d_stat);
+    sys_inode_release(dirent->inode);
+    sys_dict_release(dirent->dict);
 
     GF_FREE(dirent);
 }
@@ -432,7 +432,6 @@ ida_dirent_node_t * ida_dirent_first(ida_dirent_t * root)
 
 int32_t ida_dirent_assign(ida_local_t * local, ida_dirent_t * dst, gf_dirent_t * src)
 {
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, src, EINVAL);
     if (dst->count == 0)
     {
         INIT_LIST_HEAD(&dst->entries.list);

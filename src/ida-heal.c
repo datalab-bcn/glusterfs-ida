@@ -18,9 +18,9 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "ida-check.h"
+#include "gfsys.h"
+
 #include "ida-common.h"
-#include "ida-memory.h"
 #include "ida-type-dict.h"
 #include "ida-type-loc.h"
 #include "ida-gf.h"
@@ -68,7 +68,7 @@ void ida_heal_copy_read(ida_local_t * local, uintptr_t mask, int32_t error, ida_
     if ((error == 0) && (args->result > 0))
     {
         gf_log(local->xl->name, GF_LOG_DEBUG, "%u bytes written for healing", args->result);
-        ida_nest_readv(local, ida_bit_count(ctx->heal.src_mask), ctx->heal.src_mask, ida_heal_copy_write, ctx->heal.src, ctx->heal.size, ctx->heal.offset, 0, NULL);
+        ida_nest_readv(local, sys_bits_count64(ctx->heal.src_mask), ctx->heal.src_mask, ida_heal_copy_write, ctx->heal.src, ctx->heal.size, ctx->heal.offset, 0, NULL);
     }
     else
     {
@@ -100,7 +100,7 @@ void ida_heal_set_attr(ida_local_t * local, uintptr_t mask, int32_t error, ida_a
     ctx = local->inode_ctx;
     if ((error == 0) && (args->result >= 0))
     {
-        ida_nest_fsetattr(local, ida_bit_count(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_done, ctx->heal.dst, &args->stat.attr, GF_SET_ATTR_MODE | GF_SET_ATTR_UID | GF_SET_ATTR_GID /*| GF_SET_ATTR_ATIME | GF_SET_ATTR_MTIME*/, NULL);
+        ida_nest_fsetattr(local, sys_bits_count64(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_done, ctx->heal.dst, &args->stat.attr, GF_SET_ATTR_MODE | GF_SET_ATTR_UID | GF_SET_ATTR_GID /*| GF_SET_ATTR_ATIME | GF_SET_ATTR_MTIME*/, NULL);
     }
     else
     {
@@ -117,7 +117,7 @@ void ida_heal_get_attr(ida_local_t * local, uintptr_t mask, int32_t error, ida_a
     ctx = local->inode_ctx;
     if ((error == 0) && (args->result >= 0))
     {
-        ida_nest_fstat(local, ida_bit_count(ctx->heal.src_mask), ctx->heal.src_mask, ida_heal_set_attr, ctx->heal.src, NULL);
+        ida_nest_fstat(local, sys_bits_count64(ctx->heal.src_mask), ctx->heal.src_mask, ida_heal_set_attr, ctx->heal.src, NULL);
     }
     else
     {
@@ -134,7 +134,7 @@ void ida_heal_set_xattr(ida_local_t * local, uintptr_t mask, int32_t error, ida_
     ctx = local->inode_ctx;
     if ((error == 0) && (args->result >= 0))
     {
-        ida_nest_fsetxattr(local, ida_bit_count(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_get_attr, ctx->heal.dst, args->getxattr.xattr, 0, NULL);
+        ida_nest_fsetxattr(local, sys_bits_count64(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_get_attr, ctx->heal.dst, args->getxattr.xattr, 0, NULL);
     }
     else
     {
@@ -155,7 +155,7 @@ void ida_heal_copy_write(ida_local_t * local, uintptr_t mask, int32_t error, ida
         gf_log(local->xl->name, GF_LOG_DEBUG, "%u bytes read for healing", args->result);
         offset = ctx->heal.offset;
         ctx->heal.offset += args->result;
-        ida_nest_writev_heal(local, ida_bit_count(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_copy_read, ctx->heal.dst, args->readv.buffer.vectors, args->readv.buffer.count, offset, 0, args->readv.buffer.buffers, NULL);
+        ida_nest_writev_heal(local, sys_bits_count64(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_copy_read, ctx->heal.dst, args->readv.buffer.vectors, args->readv.buffer.count, offset, 0, args->readv.buffer.buffers, NULL);
     }
     else if ((error == 0) && (args->result == 0))
     {
@@ -175,7 +175,7 @@ void ida_heal_copy(ida_local_t * local)
 
     ctx = local->inode_ctx;
     ctx->heal.offset = 0;
-    ida_nest_readv(local, ida_bit_count(ctx->heal.src_mask), ctx->heal.src_mask, ida_heal_copy_write, ctx->heal.src, ctx->heal.size, ctx->heal.offset, 0, NULL);
+    ida_nest_readv(local, sys_bits_count64(ctx->heal.src_mask), ctx->heal.src_mask, ida_heal_copy_write, ctx->heal.src, ctx->heal.size, ctx->heal.offset, 0, NULL);
 }
 
 void ida_heal_write(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
@@ -310,7 +310,7 @@ void ida_heal_create(ida_local_t * local, uintptr_t mask, int32_t error, ida_arg
 
             return;
         }
-        error = ida_nest_create(local, ida_bit_count(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_write, &ctx->heal.loc, O_CREAT | O_TRUNC | O_RDWR, ctx->heal.mode, 0, ctx->heal.dst, xdata);
+        error = ida_nest_create(local, sys_bits_count64(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_write, &ctx->heal.loc, O_CREAT | O_TRUNC | O_RDWR, ctx->heal.mode, 0, ctx->heal.dst, xdata);
         if (unlikely(error != 0))
         {
             gf_log(local->xl->name, GF_LOG_ERROR, "Failed to create destinations for healing");
@@ -338,7 +338,7 @@ void ida_heal_link(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_
         memset(&loc, 0, sizeof(loc));
         memcpy(&loc.gfid, ctx->heal.gfid, 16);
         ida_ref(local);
-        error = ida_nest_link(local, ida_bit_count(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_create, &loc, &ctx->heal.loc, NULL);
+        error = ida_nest_link(local, sys_bits_count64(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_create, &loc, &ctx->heal.loc, NULL);
         if (unlikely(error != 0))
         {
             gf_log(local->xl->name, GF_LOG_ERROR, "Failed to link destinations for healing");
@@ -388,7 +388,7 @@ void ida_heal_start(ida_local_t * local, ida_args_cbk_t * args, uintptr_t mask)
     ctx->heal.mode = st_mode_from_ia(args->lookup.attr.ia_prot, args->lookup.attr.ia_type);
     gf_log(local->xl->name, GF_LOG_DEBUG, "Starting heal on nodes %lX", mask);
     ida_ref(local);
-    error = ida_nest_unlink(local, ida_bit_count(mask), mask, ida_heal_link, &local->args.lookup.loc, 0, NULL);
+    error = ida_nest_unlink(local, sys_bits_count64(mask), mask, ida_heal_link, &local->args.lookup.loc, 0, NULL);
     if (unlikely(error != 0))
     {
         gf_log(local->xl->name, GF_LOG_ERROR, "Failed to remove destinations for healing");
@@ -410,7 +410,7 @@ void ida_heal_start(ida_local_t * local, ida_args_cbk_t * args, uintptr_t mask)
         inode_unref(loc.inode);
         loc.inode = inode_ref(args->lookup.inode);
         memcpy(loc.gfid, ctx->heal.gfid, 16);
-        error = ida_nest_open(local, ida_bit_count(args->mixed_mask), args->mixed_mask, ida_heal_read, &loc, O_RDONLY, ctx->heal.src, NULL);
+        error = ida_nest_open(local, sys_bits_count64(args->mixed_mask), args->mixed_mask, ida_heal_read, &loc, O_RDONLY, ctx->heal.src, NULL);
         loc_wipe(&loc);
         if (unlikely(error != 0))
         {

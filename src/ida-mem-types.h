@@ -25,7 +25,7 @@
 
 enum gf_ida_mem_types_
 {
-    gf_ida_mt_ida_private_t = gf_common_mt_end + 1,
+    gf_ida_mt_ida_private_t = sys_mt_end + 1,
     gf_ida_mt_ida_local_t,
     gf_ida_mt_ida_dirent_node_t,
     gf_ida_mt_ida_dir_ctx_t,

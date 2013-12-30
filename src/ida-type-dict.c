@@ -18,58 +18,11 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "byte-order.h"
+#include "gfsys.h"
 
-#include "ida-check.h"
-#include "ida-memory.h"
 #include "ida.h"
 
 //static uint32_t dict_count = 0;
-
-int32_t ida_dict_assign(ida_local_t * local, dict_t ** dst, dict_t * src)
-{
-    if (src != NULL)
-    {
-        *dst = dict_ref(src);
-
-//        gf_log_callingfn("dict", GF_LOG_DEBUG, "dict assign [%5u] %p (%u)", __sync_add_and_fetch(&dict_count, 1), *dst, (*dst)->refcount);
-        IDA_VALIDATE_OR_RETURN_ERROR("dict", *dst, EINVAL);
-    }
-    else
-    {
-        *dst = NULL;
-    }
-
-    return 0;
-}
-
-int32_t ida_dict_new(ida_local_t * local, dict_t ** dst, dict_t * src)
-{
-    if (src != NULL)
-    {
-        *dst = dict_ref(src);
-//        gf_log_callingfn("dict", GF_LOG_DEBUG, "dict assign [%5u] %p (%u)", __sync_add_and_fetch(&dict_count, 1), *dst, (*dst)->refcount);
-        IDA_VALIDATE_OR_RETURN_ERROR("dict", *dst, EINVAL);
-    }
-    else
-    {
-        *dst = dict_new();
-//        gf_log_callingfn("dict", GF_LOG_DEBUG, "dict assign [%5u] %p (%u)", __sync_add_and_fetch(&dict_count, 1), *dst, (*dst)->refcount);
-        IDA_VALIDATE_OR_RETURN_ERROR("dict", *dst, ENOMEM);
-    }
-
-    return 0;
-}
-
-void ida_dict_unassign(dict_t ** dst)
-{
-    if (*dst != NULL)
-    {
-//        gf_log_callingfn("dict", GF_LOG_DEBUG, "dict unassign [%5u] %p (%u)", __sync_sub_and_fetch(&dict_count, 1), *dst, (*dst)->refcount);
-        dict_unref(*dst);
-        *dst = NULL;
-    }
-}
 
 int32_t ida_dict_special(char * key)
 {
@@ -88,202 +41,6 @@ int32_t ida_dict_data_compare(data_t * dst, data_t * src)
         return 1;
     }
     return memcmp(dst->data, src->data, dst->len);
-}
-
-static int ida_dict_equal_enum(dict_t * dst, char * key, data_t * value, void * arg)
-{
-    data_t * tmp;
-
-    tmp = dict_get(arg, key);
-    if (tmp == NULL)
-    {
-        return -1;
-    }
-    else
-    {
-        if (!ida_dict_special(key) && (ida_dict_data_compare(value, tmp) != 0))
-        {
-            return -1;
-        }
-    }
-
-    return 0;
-}
-
-int32_t ida_dict_equal(dict_t * dst, dict_t * src)
-{
-    if (dst == src)
-    {
-        return 1;
-    }
-
-    if (dst->count != src->count)
-    {
-        return 0;
-    }
-
-    return (dict_foreach(dst, ida_dict_equal_enum, src) == 0);
-}
-
-int32_t ida_dict_set_cow(dict_t ** dst, char * key, data_t * value)
-{
-    dict_t * new;
-    data_t * tmp;
-
-    if ((*dst)->refcount != 1)
-    {
-        tmp = dict_get(*dst, key);
-        if ((tmp == NULL) || (ida_dict_data_compare(value, tmp) != 0))
-        {
-            new = dict_copy(*dst, NULL);
-            if (unlikely(new == NULL))
-            {
-                return -1;
-            }
-            ida_dict_unassign(dst);
-            ida_dict_assign(NULL, dst, new);
-        }
-    }
-
-    return dict_set(*dst, key, value);
-}
-
-int32_t ida_dict_set_bin_cow(dict_t ** dst, char * key, void * value, uint32_t length)
-{
-    dict_t * new;
-    data_t * tmp;
-
-    if ((*dst)->refcount != 1)
-    {
-        tmp = dict_get(*dst, key);
-        if ((tmp == NULL) || (ida_dict_data_compare(value, tmp) != 0))
-        {
-            new = dict_copy(*dst, NULL);
-            if (unlikely(new == NULL))
-            {
-                return -1;
-            }
-            ida_dict_unassign(dst);
-            ida_dict_assign(NULL, dst, new);
-        }
-    }
-
-    return dict_set_bin(*dst, key, value, length);
-}
-
-int32_t ida_dict_get_bin(dict_t * src, char * key, void * value, uint32_t * length)
-{
-    data_t * data;
-    int32_t error, size;
-
-    error = ENOENT;
-    data = dict_get(src, key);
-    if (data != NULL)
-    {
-        error = ENOBUFS;
-        size = *length;
-        *length = data->len;
-        if (size >= data->len)
-        {
-            error = 0;
-            size = data->len;
-        }
-        memcpy(value, data->data, size);
-    }
-
-    return error;
-}
-
-#define hton8(_x) _x
-#define ntoh8(_x) _x
-
-#define IDA_DICT_SET_COW(_type, _size) \
-    int32_t ida_dict_set_##_type##_size##_cow(dict_t ** dst, char * key, _type##_size##_t value) \
-    { \
-        int32_t error; \
-        typeof(value) * ptr = IDA_CALLOC_OR_RETURN_ERROR("ida-dict", sizeof(value), uint8_t, ENOMEM); \
-        *ptr = hton##_size(value); \
-        error = ida_dict_set_bin_cow(dst, key, ptr, sizeof(value)); \
-        if (unlikely(error != 0)) \
-        { \
-            GF_FREE(ptr); \
-        } \
-        return error; \
-    }
-
-#define IDA_DICT_GET(_type, _size) \
-    int32_t ida_dict_get_##_type##_size(dict_t * src, char * key, _type##_size##_t * value) \
-    { \
-        typeof(*value) tmp; \
-        uint32_t size = sizeof(tmp); \
-        int32_t error = ida_dict_get_bin(src, key, &tmp, &size); \
-        if (likely(error == 0)) \
-        { \
-            *value = ntoh##_size(tmp); \
-        } \
-        return error; \
-    }
-
-IDA_DICT_SET_COW(int, 8)
-IDA_DICT_SET_COW(int, 16)
-IDA_DICT_SET_COW(int, 32)
-IDA_DICT_SET_COW(int, 64)
-IDA_DICT_SET_COW(uint, 16)
-IDA_DICT_SET_COW(uint, 32)
-IDA_DICT_SET_COW(uint, 64)
-
-IDA_DICT_GET(int, 8)
-IDA_DICT_GET(int, 16)
-IDA_DICT_GET(int, 32)
-IDA_DICT_GET(int, 64)
-IDA_DICT_GET(uint, 16)
-IDA_DICT_GET(uint, 32)
-IDA_DICT_GET(uint, 64)
-
-int32_t ida_dict_del_cow(dict_t ** dst, char * key)
-{
-    dict_t * new;
-
-    if ((*dst)->refcount != 1)
-    {
-        if (dict_get(*dst, key) != NULL)
-        {
-            new = dict_copy(*dst, NULL);
-            if (unlikely(new == NULL))
-            {
-                return -1;
-            }
-            dict_unref(*dst);
-            dict_ref(new);
-            *dst = new;
-        }
-    }
-
-    dict_del(*dst, key);
-
-    return 0;
-}
-
-int ida_dict_clean_enum(dict_t * src, char * key, data_t * value, void * arg)
-{
-    dict_t ** dict;
-
-    dict = arg;
-
-    if (ida_dict_special(key))
-    {
-        if (ida_dict_del_cow(dict, key) != 0)
-        {
-            return -1;
-        }
-    }
-
-    return 0;
-}
-
-int32_t ida_dict_clean_cow(dict_t ** dst)
-{
-    return dict_foreach(*dst, ida_dict_clean_enum, dst);
 }
 
 int ida_dict_combine_enum(dict_t * src, char * key, data_t * value, void * arg)
@@ -348,4 +105,49 @@ int32_t ida_dict_combine_cow(ida_local_t * local, dict_t ** dst, dict_t * src)
     }
 
     return dict_foreach(src, ida_dict_combine_enum, dst);
+}
+
+int ida_dict_compare_enum(dict_t * src, char * key, data_t * value, void * arg)
+{
+//    dict_t * new;
+    dict_t * dict;
+    data_t * tmp;
+
+    dict = arg;
+
+    tmp = dict_get(dict, key);
+    if (tmp != NULL)
+    {
+        if (ida_dict_special(key))
+        {
+            if (value->len != tmp->len)
+            {
+                return -1;
+            }
+        }
+        else if (ida_dict_data_compare(value, tmp) != 0)
+        {
+            return -1;
+        }
+    }
+    else
+    {
+        return -1;
+    }
+
+    return 0;
+}
+
+bool ida_dict_compare(dict_t * dst, dict_t * src)
+{
+    if ((dst == NULL) || (src == NULL))
+    {
+        return dst == src;
+    }
+    if (dst->count != src->count)
+    {
+        logW("dict-compare: mismatching number of items");
+        return false;
+    }
+    return dict_foreach(src, ida_dict_compare_enum, dst) == 0;
 }

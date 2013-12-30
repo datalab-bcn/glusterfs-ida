@@ -18,8 +18,8 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "ida-check.h"
-#include "ida-memory.h"
+#include "gfsys.h"
+
 #include "ida-manager.h"
 
 int32_t ida_buffer_add_buffer(ida_local_t * local, ida_buffer_t * buffers, uint32_t size)
@@ -122,9 +122,6 @@ int32_t ida_buffer_assign(ida_local_t * local, ida_buffer_t * dst, struct iobref
     char * ptr;
     int32_t i, error;
 
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, buffers, EINVAL);
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, count > 0, EINVAL);
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, vectors, EINVAL);
     if (unlikely(count > 1))
     {
         error = ida_buffer_new(local, dst, iov_length(vectors, count));
@@ -142,10 +139,18 @@ int32_t ida_buffer_assign(ida_local_t * local, ida_buffer_t * dst, struct iobref
     }
     else
     {
-        dst->buffers = iobref_ref(buffers);
-        IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, dst->buffers, ENOMEM);
-        dst->vectors = iov_dup(vectors, count);
-        IDA_VALIDATE_OR_GOTO(local->xl->name, dst->vectors, failed);
+        SYS_PTR(
+            &dst->buffers, iobref_ref, (buffers),
+            ENOMEM,
+            E(),
+            RETERR()
+        );
+        SYS_PTR(
+            &dst->vectors, iov_dup, (vectors, count),
+            ENOMEM,
+            E(),
+            GOTO(failed)
+        );
     }
 
     dst->count = 1;

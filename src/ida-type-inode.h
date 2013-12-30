@@ -27,6 +27,6 @@
 
 int32_t ida_inode_assign(ida_local_t * local, inode_t ** dst, inode_t * src);
 void ida_inode_unassign(inode_t ** dst);
-int32_t ida_inode_combine(ida_local_t * local, inode_t * dst, inode_t * src);
+bool ida_inode_combine(ida_local_t * local, inode_t * dst, inode_t * src);
 
 #endif /* __IDA_INODE_H__ */

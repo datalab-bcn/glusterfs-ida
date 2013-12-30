@@ -21,85 +21,30 @@
 #ifndef __IDA_MANAGER_H__
 #define __IDA_MANAGER_H__
 
+#include "gfdfc.h"
+
 #include "list.h"
 #include "xlator.h"
 
 #include "ida-types.h"
 
-#include "ida-fop-lookup.h"
-#include "ida-fop-stat.h"
-#include "ida-fop-truncate.h"
-#include "ida-fop-access.h"
-#include "ida-fop-readlink.h"
-#include "ida-fop-mknod.h"
-#include "ida-fop-mkdir.h"
-#include "ida-fop-unlink.h"
-#include "ida-fop-rmdir.h"
-#include "ida-fop-symlink.h"
-#include "ida-fop-rename.h"
-#include "ida-fop-link.h"
-#include "ida-fop-create.h"
-#include "ida-fop-open.h"
-#include "ida-fop-readv.h"
-#include "ida-fop-writev.h"
-#include "ida-fop-flush.h"
-#include "ida-fop-fsync.h"
-#include "ida-fop-opendir.h"
-#include "ida-fop-readdir.h"
-#include "ida-fop-statfs.h"
-#include "ida-fop-xattr.h"
-#include "ida-fop-lk.h"
-#include "ida-fop-rchecksum.h"
-
 #define IDA_EXECUTE_MAX INT_MIN
 
 typedef struct
 {
-    uint32_t nodes;
-    uint32_t fragments;
-    uint32_t redundancy;
-    uint32_t block_size;
-    uint64_t device;
-    uintptr_t node_mask;
-    uintptr_t xl_up;
-    uintptr_t locked_mask;
-    gf_lock_t lock;
+    xlator_t *  xl;
+    uint32_t    nodes;
+    uint32_t    fragments;
+    uint32_t    redundancy;
+    uint32_t    block_size;
+    uint64_t    device;
+    uintptr_t   node_mask;
+    uintptr_t   xl_up;
+    uintptr_t   locked_mask;
+    gf_lock_t   lock;
     xlator_t ** xl_list;
+    dfc_t *     dfc;
 } ida_private_t;
-
-union _ida_args
-{
-    ida_args_lookup_t      lookup;
-    ida_args_stat_t        stat;
-    ida_args_truncate_t    truncate;
-    ida_args_access_t      access;
-    ida_args_readlink_t    readlink;
-    ida_args_mknod_t       mknod;
-    ida_args_mkdir_t       mkdir;
-    ida_args_unlink_t      unlink;
-    ida_args_rmdir_t       rmdir;
-    ida_args_symlink_t     symlink;
-    ida_args_rename_t      rename;
-    ida_args_link_t        link;
-    ida_args_create_t      create;
-    ida_args_open_t        open;
-    ida_args_readv_t       readv;
-    ida_args_writev_t      writev;
-    ida_args_flush_t       flush;
-    ida_args_fsync_t       fsync;
-    ida_args_opendir_t     opendir;
-    ida_args_readdir_t     readdir;
-    ida_args_statfs_t      statfs;
-    ida_args_setxattr_t    setxattr;
-    ida_args_getxattr_t    getxattr;
-    ida_args_removexattr_t removexattr;
-    ida_args_lk_t          lk;
-    ida_args_inodelk_t     inodelk;
-    ida_args_entrylk_t     entrylk;
-    ida_args_rchecksum_t   rchecksum;
-    ida_args_xattrop_t     xattrop;
-    ida_args_setattr_t     setattr;
-};
 
 struct _ida_args_cbk
 {
@@ -110,39 +55,6 @@ struct _ida_args_cbk
     uint32_t         mixed_count;
     uintptr_t        mixed_mask;
     uint64_t         heal_available;
-    union
-    {
-        ida_args_lookup_cbk_t      lookup;
-        ida_args_stat_cbk_t        stat;
-        ida_args_truncate_cbk_t    truncate;
-        ida_args_access_cbk_t      access;
-        ida_args_readlink_cbk_t    readlink;
-        ida_args_mknod_cbk_t       mknod;
-        ida_args_mkdir_cbk_t       mkdir;
-        ida_args_unlink_cbk_t      unlink;
-        ida_args_rmdir_cbk_t       rmdir;
-        ida_args_symlink_cbk_t     symlink;
-        ida_args_rename_cbk_t      rename;
-        ida_args_link_cbk_t        link;
-        ida_args_create_cbk_t      create;
-        ida_args_open_cbk_t        open;
-        ida_args_readv_cbk_t       readv;
-        ida_args_writev_cbk_t      writev;
-        ida_args_flush_cbk_t       flush;
-        ida_args_fsync_cbk_t       fsync;
-        ida_args_opendir_cbk_t     opendir;
-        ida_args_readdir_cbk_t     readdir;
-        ida_args_statfs_cbk_t      statfs;
-        ida_args_setxattr_cbk_t    setxattr;
-        ida_args_getxattr_cbk_t    getxattr;
-        ida_args_removexattr_cbk_t removexattr;
-        ida_args_lk_cbk_t          lk;
-        ida_args_inodelk_cbk_t     inodelk;
-        ida_args_entrylk_cbk_t     entrylk;
-        ida_args_rchecksum_cbk_t   rchecksum;
-        ida_args_xattrop_cbk_t     xattrop;
-        ida_args_setattr_cbk_t     setattr;
-    };
 };
 
 typedef struct
@@ -210,10 +122,52 @@ struct _ida_local
     struct list_head args_groups;
     inode_t * inode;
     ida_inode_ctx_t * inode_ctx;
-    ida_args_cbk_t * cbk;
-    ida_args_t args;
-    ida_args_cbk_t args_cbk[0];
 };
+
+struct _ida_request;
+typedef struct _ida_request ida_request_t;
+
+struct _ida_answer;
+typedef struct _ida_answer ida_answer_t;
+
+struct _ida_handlers;
+typedef struct _ida_handlers ida_handlers_t;
+
+struct _ida_handlers
+{
+    void           (* dispatch)(ida_private_t *, ida_request_t *);
+    bool           (* combine)(ida_request_t *, uint32_t, ida_answer_t *,
+                               uintptr_t *);
+    int32_t        (* rebuild)(ida_private_t *, ida_request_t *,
+                               ida_answer_t *);
+    ida_answer_t * (* copy)(uintptr_t *);
+};
+
+struct _ida_request
+{
+    call_frame_t *      frame;
+    xlator_t *          xl;
+    ida_handlers_t *    handlers;
+    dfc_transaction_t * txn;
+    int32_t             required;
+    int32_t             pending;
+    uintptr_t           flags;
+    uintptr_t           data;
+    uintptr_t           sent;
+    sys_lock_t          lock;
+    struct list_head    answers;
+};
+
+struct _ida_answer
+{
+    struct list_head list;
+    uint32_t         count;
+    int32_t          id;
+    ida_answer_t *   next;
+};
+
+#define IDA_REQ_SIZE SYS_CALLS_ADJUST_SIZE(sizeof(ida_request_t))
+#define IDA_ANS_SIZE SYS_CALLS_ADJUST_SIZE(sizeof(ida_answer_t))
 
 #define ida_mask_for_each(_index, _mask) \
     for ((_index) = (ffsll(_mask) - 1) & 127; (_index) < 64; (_index)++, (_index) += (ffsll((_mask) >> (_index)) - 1) & 127)
@@ -224,6 +178,7 @@ struct _ida_local
 #define ida_args_cbk_for_each_entry(_args, _local) \
     list_for_each_entry(_args, &(_local)->args_groups, list)
 
+/*
 int32_t ida_nest(ida_local_t ** local, xlator_t * xl, call_frame_t * base, inode_t * inode, ida_manager_t * manager, int32_t required, uintptr_t mask, ida_callback_f callback);
 void ida_ref(ida_local_t * local);
 void ida_unref(ida_local_t * local);
@@ -233,7 +188,7 @@ void ida_report(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk
 ida_local_t * ida_process(ida_args_cbk_t ** args, xlator_t * xl, call_frame_t * frame, void * cookie, int32_t result, int32_t code, dict_t * xdata);
 void ida_combine(ida_local_t * local, ida_args_cbk_t * args, int32_t error);
 void ida_complete(ida_local_t * local, int32_t error);
-
+*/
 #define IDA_WIND(_fop, _frame, _child, _index, _cbk, _args...) \
     STACK_WIND_COOKIE(_frame, _cbk, (void *)(uintptr_t)(_index), _child, (_child)->fops->_fop, ## _args)
 
@@ -248,5 +203,10 @@ void ida_complete(ida_local_t * local, int32_t error);
         } \
         STACK_UNWIND_STRICT(_fop, _frame, _result, __tmp_code, ## _args); \
     } while (0)
+
+void ida_dispatch_incremental(ida_private_t * ida, ida_request_t * req);
+void ida_dispatch_all(ida_private_t * ida, ida_request_t * req);
+void ida_dispatch_minimum(ida_private_t * ida, ida_request_t * req);
+void ida_dispatch_write(ida_private_t * ida, ida_request_t * req);
 
 #endif /* __IDA_MANAGER_H__ */

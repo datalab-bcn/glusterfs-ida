@@ -18,14 +18,18 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "ida-check.h"
+#include "gfsys.h"
+
 #include "ida-manager.h"
 
 int32_t ida_str_assign(ida_local_t * local, char ** dst, const char * src)
 {
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, src, EINVAL);
-    *dst = gf_strdup(src);
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, *dst, EINVAL);
+    SYS_PTR(
+        dst, gf_strdup, (src),
+        EINVAL,
+        E(),
+        RETERR()
+    );
 
     return 0;
 }

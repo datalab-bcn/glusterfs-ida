@@ -18,14 +18,18 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "ida-check.h"
+#include "gfsys.h"
+
 #include "ida-manager.h"
 
 int32_t ida_md5_assign(ida_local_t * local, uint8_t ** dst, uint8_t * src)
 {
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, src, EINVAL);
-    *dst = memdup(src, 16);
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, *dst, EINVAL);
+    SYS_PTR(
+        dst, memdup, (src, 16),
+        EINVAL,
+        E(),
+        RETERR()
+    );
 
     return 0;
 }

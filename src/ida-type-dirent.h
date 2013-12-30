@@ -28,7 +28,7 @@
 gf_dirent_t * ida_dirent_dup(ida_local_t * local, gf_dirent_t * dirent);
 int32_t ida_dirent_assign(ida_local_t * local, ida_dirent_t * dst, gf_dirent_t * src);
 void ida_dirent_unassign(ida_dirent_t * dst);
-int32_t ida_dirent_combine(ida_local_t * local, ida_dirent_t * dst, ida_dirent_t * src);
+bool ida_dirent_combine(ida_dirent_t * dst, ida_dirent_t * src);
 void ida_dirent_clean(ida_local_t * local, ida_dirent_t * dst, int32_t cut);
 
 #endif /* __IDA_DIRENT_H__ */

@@ -25,9 +25,10 @@
 
 #include "ida-types.h"
 
-int32_t ida_iatt_assign(ida_local_t * local, struct iatt * dst, struct iatt * src);
-void ida_iatt_unassign(struct iatt * dst);
-int32_t ida_iatt_combine(ida_local_t * local, struct iatt * dst, struct iatt * src);
-void ida_iatt_adjust(ida_local_t * local, struct iatt * dst, dict_t * xattr, inode_t * inode);
+bool ida_iatt_combine(struct iatt * dst, struct iatt * src1,
+                      struct iatt * src2);
+void ida_iatt_adjust(ida_local_t * local, struct iatt * dst, dict_t * xattr,
+                     inode_t * inode);
+void ida_iatt_rebuild(ida_private_t * ida, struct iatt * iatt);
 
 #endif /* __IDA_IATT_C__ */

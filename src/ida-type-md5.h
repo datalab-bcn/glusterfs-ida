@@ -27,6 +27,6 @@
 
 int32_t ida_md5_assign(ida_local_t * local, uint8_t ** dst, uint8_t * src);
 void ida_md5_unassign(uint8_t ** dst);
-int32_t ida_md5_combine(ida_local_t * local, uint8_t * dst, uint8_t * src);
+bool ida_md5_combine(ida_local_t * local, uint8_t * dst, uint8_t * src);
 
 #endif /* __IDA_MD5_H__ */

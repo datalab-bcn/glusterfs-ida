@@ -27,6 +27,7 @@
 
 int32_t ida_statvfs_assign(ida_local_t * local, struct statvfs * dst, struct statvfs * src);
 void ida_statvfs_unassign(struct statvfs * dst);
-int32_t ida_statvfs_combine(ida_local_t * local, struct statvfs * dst, struct statvfs * src);
+bool ida_statvfs_combine(struct statvfs * dst, struct statvfs * src1,
+                         struct statvfs * src2);
 
 #endif /* __IDA_STATVFS_H__ */

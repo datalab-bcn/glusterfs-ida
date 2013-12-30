@@ -25,11 +25,6 @@
 
 #include "ida-manager.h"
 
-#define offset_of(_type, _field) ((uintptr_t)(&((_type *)0)->_field))
-#define container_of(_ptr, _type, _field) ((_type *)(((char *)(_ptr)) - offset_of(_type, _field)))
-
-int32_t ida_bit_count(uintptr_t mask);
-
 off_t ida_offset_adjust(ida_local_t * local, off_t offset);
 size_t ida_size_adjust(ida_local_t * local, size_t size);
 void ida_offset_size_adjust(ida_local_t * loca, off_t * offset, size_t * size);

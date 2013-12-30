@@ -27,6 +27,6 @@
 
 int32_t ida_lock_assign(ida_local_t * local, struct gf_flock * dst, struct gf_flock * src);
 void ida_lock_unassign(struct gf_flock * dst);
-int32_t ida_lock_combine(ida_local_t * local, struct gf_flock * dst, struct gf_flock * src);
+bool ida_lock_compare(struct gf_flock * dst, struct gf_flock * src);
 
 #endif /* __IDA_LOCK_C__ */

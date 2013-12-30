@@ -18,14 +18,14 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "ida-check.h"
+#include "gfsys.h"
+
 #include "ida-manager.h"
 
 int32_t ida_statvfs_assign(ida_local_t * local, struct statvfs * dst, struct statvfs * src)
 {
     uint64_t f;
 
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, src, EINVAL);
     if (src->f_frsize > src->f_bsize)
     {
         gf_log(local->xl->name, GF_LOG_ERROR, "Invalid fragment size");
@@ -58,52 +58,27 @@ void ida_statvfs_unassign(struct statvfs * dst)
 {
 }
 
-int32_t ida_statvfs_combine(ida_local_t * local, struct statvfs * dst, struct statvfs * src)
+bool ida_statvfs_combine(struct statvfs * dst, struct statvfs * src1,
+                         struct statvfs * src2)
 {
-    if (dst->f_bsize < src->f_bsize)
-    {
-        dst->f_bsize = src->f_bsize;
-    }
-    if (dst->f_frsize < src->f_frsize)
-    {
-        dst->f_frsize = src->f_frsize;
-    }
+    dst->f_bsize = SYS_MAX(src1->f_bsize, src2->f_bsize);
+    dst->f_frsize = SYS_MAX(src1->f_frsize, src2->f_frsize);
+    dst->f_blocks = SYS_MIN(src1->f_blocks * src1->f_frsize,
+                            src2->f_blocks * src2->f_frsize) / dst->f_frsize;
+    dst->f_bfree = SYS_MIN(src1->f_bfree * src1->f_frsize,
+                           src2->f_bfree * src2->f_frsize) / dst->f_frsize;
+    dst->f_bavail = SYS_MIN(src1->f_bavail * src1->f_frsize,
+                            src2->f_bavail * src2->f_frsize) / dst->f_frsize;
+    dst->f_files = SYS_MAX(src1->f_files, src2->f_files);
+    dst->f_ffree = SYS_MIN(src1->f_ffree, src2->f_ffree);
+    dst->f_favail = SYS_MIN(src1->f_favail, src2->f_favail);
+    dst->f_namemax = SYS_MIN(src1->f_namemax, src2->f_namemax);
 
-    if (dst->f_flag != src->f_flag)
+    if (src1->f_flag != src2->f_flag)
     {
-        gf_log(local->xl->name, GF_LOG_WARNING, "Filesystem flags differ: %lu - %lu", dst->f_flag, src->f_flag);
+        logW("Filesystem flags differ: %lX - %lX", src1->f_flag, src2->f_flag);
     }
+    dst->f_flag = src1->f_flag & src2->f_flag;
 
-    if (dst->f_blocks > src->f_blocks)
-    {
-        dst->f_blocks = src->f_blocks;
-    }
-    if (dst->f_bfree > src->f_bfree)
-    {
-        dst->f_bfree = src->f_bfree;
-    }
-    if (dst->f_bavail > src->f_bavail)
-    {
-        dst->f_bavail = src->f_bavail;
-    }
-
-    if (dst->f_files > src->f_files)
-    {
-        dst->f_files = src->f_files;
-    }
-    if (dst->f_ffree > src->f_ffree)
-    {
-        dst->f_ffree = src->f_ffree;
-    }
-    if (dst->f_favail > src->f_favail)
-    {
-        dst->f_favail = src->f_favail;
-    }
-
-    if (dst->f_namemax > src->f_namemax)
-    {
-        dst->f_namemax = src->f_namemax;
-    }
-
-    return 0;
+    return true;
 }

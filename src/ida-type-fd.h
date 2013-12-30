@@ -27,7 +27,7 @@
 
 int32_t ida_fd_assign(ida_local_t * local, fd_t ** dst, fd_t * src);
 void ida_fd_unassign(fd_t ** dst);
-int32_t ida_fd_combine(ida_local_t * local, fd_t * dst, fd_t * src);
+bool ida_fd_combine(ida_local_t * local, fd_t * dst, fd_t * src);
 int32_t ida_fd_to_loc(ida_local_t * local, loc_t * loc, fd_t * fd);
 
 #endif /* __IDA_FD_H__ */

@@ -18,17 +18,21 @@
   <http://www.gnu.org/licenses/>.
 */
 
+#include "gfsys.h"
+
 #include <libgen.h>
 
-#include "ida-check.h"
 #include "ida-manager.h"
 
 int32_t ida_loc_assign(ida_local_t * local, loc_t * dst, loc_t * src)
 {
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, src, EINVAL);
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, dst, EINVAL);
     memset(dst, 0, sizeof(loc_t));
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, loc_copy(dst, src) == 0, EINVAL);
+    SYS_CODE(
+        loc_copy, (dst, src),
+        EINVAL,
+        E(),
+        RETERR()
+    );
 
     return 0;
 }
@@ -42,13 +46,18 @@ int32_t ida_loc_parent(ida_local_t * local, loc_t * parent, loc_t * child)
 {
     char * tmp;
 
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, child->parent, EINVAL);
-
-    tmp = gf_strdup(child->path);
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, tmp, ENOMEM);
-    parent->path = gf_strdup(dirname(tmp));
-    GF_FREE(tmp);
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, parent->path, ENOMEM);
+    SYS_PTR(
+        &tmp, gf_strdup, (child->path),
+        ENOMEM,
+        E(),
+        RETERR()
+    );
+    SYS_PTR(
+        &parent->path, gf_strdup, (dirname(tmp)),
+        ENOMEM,
+        E(),
+        GOTO(failed)
+    );
 
     parent->name = strrchr(parent->path, '/');
     if (parent->name != NULL)
@@ -56,11 +65,12 @@ int32_t ida_loc_parent(ida_local_t * local, loc_t * parent, loc_t * child)
         parent->name++;
     }
 
-    parent->inode  = inode_ref(child->parent);
-    if (unlikely(parent->inode == NULL))
-    {
-        goto failed;
-    }
+    SYS_PTR(
+        &parent->inode, inode_ref, (child->parent),
+        ENOMEM,
+        E(),
+        GOTO(failed_parent)
+    );
     if (!uuid_is_null(child->pargfid))
     {
         uuid_copy(parent->gfid, child->pargfid);
@@ -75,10 +85,14 @@ int32_t ida_loc_parent(ida_local_t * local, loc_t * parent, loc_t * child)
         }
     }
 
+    SYS_FREE(tmp);
+
     return 0;
 
+failed_parent:
+    SYS_FREE((char *)parent->path);
 failed:
-    GF_FREE((char *)parent->path);
+    SYS_FREE(tmp);
 
     return ENOMEM;
 }

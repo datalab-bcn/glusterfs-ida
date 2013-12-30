@@ -18,7 +18,8 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "ida-check.h"
+#include "gfsys.h"
+
 #include "ida-common.h"
 #include "ida.h"
 
@@ -27,18 +28,6 @@ struct ida_xattr_merge_data
     ida_local_t * local;
     dict_t ** dict;
 };
-
-int32_t ida_bit_count(uintptr_t mask)
-{
-    mask -= (mask >> 1) & 0x5555555555555555ULL;
-    mask = ((mask >> 2) & 0x3333333333333333ULL) + (mask & 0x3333333333333333ULL);
-    mask = (mask + (mask >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
-    mask += mask >> 8;
-    mask += mask >> 16;
-    mask += mask >> 32;
-
-    return mask & 0xFF;
-}
 
 off_t ida_offset_adjust(ida_local_t * local, off_t offset)
 {

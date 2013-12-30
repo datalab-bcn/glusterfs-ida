@@ -18,12 +18,12 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "ida-check.h"
+#include "gfsys.h"
+
 #include "ida-manager.h"
 
 int32_t ida_lock_assign(ida_local_t * local, struct gf_flock * dst, struct gf_flock * src)
 {
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, src, EINVAL);
     *dst = *src;
 
     return 0;
@@ -37,4 +37,19 @@ int32_t ida_lock_combine(ida_local_t * local, struct gf_flock * dst, struct gf_f
 {
     // TODO: Combine locks
     return 0;
+}
+
+bool ida_lock_compare(struct gf_flock * dst, struct gf_flock * src)
+{
+    if ((dst->l_type != src->l_type) ||
+        (dst->l_whence != src->l_whence) ||
+        (dst->l_start != src->l_start) ||
+        (dst->l_len != src->l_len) ||
+        (dst->l_pid != src->l_pid) ||
+        !is_same_lkowner(&dst->l_owner, &src->l_owner))
+    {
+        return false;
+    }
+
+    return true;
 }

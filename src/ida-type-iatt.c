@@ -18,31 +18,11 @@
   <http://www.gnu.org/licenses/>.
 */
 
-#include "ida-check.h"
-#include "ida-memory.h"
+#include "gfsys.h"
+
 #include "ida-manager.h"
 #include "ida-type-dict.h"
 #include "ida.h"
-
-int32_t ida_iatt_assign(ida_local_t * local, struct iatt * dst, struct iatt * src)
-{
-    IDA_VALIDATE_OR_RETURN_ERROR(local->xl->name, src, EINVAL);
-    *dst = *src;
-    if (dst->ia_type != IA_INVAL)
-    {
-        if (dst->ia_blksize < 4096)
-        {
-            dst->ia_blksize = 4096;
-        }
-        dst->ia_dev = local->private->device;
-    }
-
-    return 0;
-}
-
-void ida_iatt_unassign(struct iatt * dst)
-{
-}
 
 void ida_iatt_time_merge(uint32_t * dst_sec, uint32_t * dst_nsec, uint32_t src_sec, uint32_t src_nsec)
 {
@@ -53,33 +33,38 @@ void ida_iatt_time_merge(uint32_t * dst_sec, uint32_t * dst_nsec, uint32_t src_s
     }
 }
 
-int32_t ida_iatt_combine(ida_local_t * local, struct iatt * dst, struct iatt * src)
+bool ida_iatt_combine(struct iatt * dst, struct iatt * src1,
+                      struct iatt * src2)
 {
-    if (/*(dst->ia_ino != src->ia_ino) ||*/
-        (uuid_compare(dst->ia_gfid, src->ia_gfid) != 0) ||
-        (st_mode_from_ia(dst->ia_prot, dst->ia_type) != st_mode_from_ia(src->ia_prot, src->ia_type)) ||
-//        (dst->ia_nlink != src->ia_nlink) ||
-        (dst->ia_uid != src->ia_uid) ||
-        (dst->ia_gid != src->ia_gid) ||
-        (dst->ia_rdev != src->ia_rdev) ||
-        (dst->ia_size != src->ia_size))
-//        (dst->ia_blocks != src->ia_blocks))
+    if ((src1->ia_ino != src2->ia_ino) ||
+        ((src1->ia_ino != 1) && (src1->ia_nlink != src2->ia_nlink)) ||
+        (src1->ia_uid != src2->ia_uid) ||
+        (src1->ia_gid != src2->ia_gid) ||
+        (src1->ia_rdev != src2->ia_rdev) ||
+        (src1->ia_size != src2->ia_size) ||
+        (st_mode_from_ia(src1->ia_prot, src1->ia_type) !=
+         st_mode_from_ia(src2->ia_prot, src2->ia_type)) ||
+        (uuid_compare(src1->ia_gfid, src2->ia_gfid) != 0))
     {
-        return EIO;
+        return false;
     }
 
-    if (dst->ia_blksize < src->ia_blksize)
+    *dst = *src1;
+    if (dst->ia_blksize < src2->ia_blksize)
     {
-        dst->ia_blksize = src->ia_blksize;
+        dst->ia_blksize = src2->ia_blksize;
     }
 
-    ida_iatt_time_merge(&dst->ia_atime, &dst->ia_atime_nsec, src->ia_atime, src->ia_atime_nsec);
-    ida_iatt_time_merge(&dst->ia_mtime, &dst->ia_mtime_nsec, src->ia_mtime, src->ia_mtime_nsec);
-    ida_iatt_time_merge(&dst->ia_ctime, &dst->ia_ctime_nsec, src->ia_ctime, src->ia_ctime_nsec);
+    ida_iatt_time_merge(&dst->ia_atime, &dst->ia_atime_nsec, src2->ia_atime,
+                        src2->ia_atime_nsec);
+    ida_iatt_time_merge(&dst->ia_mtime, &dst->ia_mtime_nsec, src2->ia_mtime,
+                        src2->ia_mtime_nsec);
+    ida_iatt_time_merge(&dst->ia_ctime, &dst->ia_ctime_nsec, src2->ia_ctime,
+                        src2->ia_ctime_nsec);
 
-    return 0;
+    return true;
 }
-
+/*
 void ida_iatt_adjust(ida_local_t * local, struct iatt * dst, dict_t * xattr, inode_t * inode)
 {
     int32_t error;
@@ -159,5 +144,15 @@ void ida_iatt_adjust(ida_local_t * local, struct iatt * dst, dict_t * xattr, ino
         }
 
         dst->ia_blocks *= local->private->fragments;
+    }
+}
+*/
+
+void ida_iatt_rebuild(ida_private_t * ida, struct iatt * iatt)
+{
+    if (iatt->ia_type == IA_IFREG)
+    {
+        iatt->ia_size *= ida->fragments;
+        iatt->ia_blocks *= ida->fragments;
     }
 }

@@ -27,6 +27,6 @@
 
 int32_t ida_str_assign(ida_local_t * local, char ** dst, const char * src);
 void ida_str_unassign(char ** dst);
-int32_t ida_str_combine(ida_local_t * local, const char * dst, const char * src);
+bool ida_str_combine(ida_local_t * local, const char * dst, const char * src);
 
 #endif /* __IDA_STR_H__ */
