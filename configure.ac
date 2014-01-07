@@ -70,6 +70,26 @@ fi
 
 AC_SUBST(gfsys)
 
+AC_MSG_CHECKING([whether user supplied gfdfc location is valid])
+AC_ARG_WITH(gfdfc,
+            [AS_HELP_STRING([--with-gfdfc=DIR], [location of gfdfc])],
+            [gfdfc="$withval"],
+            [AC_MSG_RESULT([no])
+             AC_MSG_ERROR([--with-gfdfc is mandatory])])
+if test -d "$gfdfc"; then
+    if test -f "$gfdfc/dfc-config.h"; then
+        AC_MSG_RESULT([yes])
+    else
+        AC_MSG_RESULT([no])
+        AC_MSG_ERROR([gfdfc is not configured or location is not valid])
+    fi
+else
+    AC_MSG_RESULT([no])
+    AC_MSG_ERROR([invalid value for gfdfc location])
+fi
+
+AC_SUBST(gfdfc)
+
 AC_MSG_CHECKING([glusterfs library directory])
 gflibdir=`make -C ${gfdir} --eval="dummy: ; @echo pkglibdir=\\\$(pkglibdir)/\\\$(PACKAGE_VERSION)" | sed -n "s/^pkglibdir=//p"`
 if test -z "$gflibdir"; then
@@ -149,7 +169,7 @@ LDFLAGS="${LDFLAGS} ${GF_LDFLAGS}"
 
 CPPFLAGS="${CPPFLAGS} -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE -D${GF_HOST_OS}"
 CPPFLAGS="${CPPFLAGS} -I${gfdir} -I${gfdir}/libglusterfs/src"
-CPPFLAGS="${CPPFLAGS} -I${gfdir}/contrib/uuid -I${gfsys}/src"
+CPPFLAGS="${CPPFLAGS} -I${gfdir}/contrib/uuid -I${gfsys}/src -I${gfdfc}/lib"
 
 AC_SUBST(AM_MAKEFLAGS)
 AC_SUBST(AM_LIBTOOLFLAGS)

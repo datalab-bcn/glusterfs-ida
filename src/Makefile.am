@@ -49,5 +49,5 @@ ida_la_SOURCES += ida-fop-lk.c
 ida_la_SOURCES += ida-fop-rchecksum.c
 ida_la_SOURCES += ida-heal.c
 
-ida_la_LIBADD = $(gfdir)/libglusterfs/src/libglusterfs.la $(gfsys)/src/libgfsys.la
+ida_la_LIBADD = $(gfdir)/libglusterfs/src/libglusterfs.la $(gfsys)/src/libgfsys.la $(gfdfc)/lib/libgfdfc.la
 
