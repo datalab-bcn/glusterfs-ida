@@ -36,6 +36,27 @@ void ida_iatt_time_merge(uint32_t * dst_sec, uint32_t * dst_nsec, uint32_t src_s
 bool ida_iatt_combine(struct iatt * dst, struct iatt * src1,
                       struct iatt * src2)
 {
+    size_t blksize, blocks1, blocks2;
+
+    if (src1->ia_blksize == src2->ia_blksize)
+    {
+        blksize = src1->ia_blksize;
+        blocks1 = src1->ia_blocks;
+        blocks2 = src2->ia_blocks;
+    }
+    else if (src1->ia_blksize < src2->ia_blksize)
+    {
+        blksize = src2->ia_blksize;
+        blocks2 = src2->ia_blocks;
+        blocks1 = (src1->ia_blocks * src1->ia_blksize + blksize - 1) / blksize;
+    }
+    else
+    {
+        blksize = src1->ia_blksize;
+        blocks1 = src1->ia_blocks;
+        blocks2 = (src2->ia_blocks * src2->ia_blksize + blksize - 1) / blksize;
+    }
+
     if ((src1->ia_ino != src2->ia_ino) ||
         ((src1->ia_ino != 1) && (src1->ia_nlink != src2->ia_nlink)) ||
         (src1->ia_uid != src2->ia_uid) ||
@@ -50,10 +71,9 @@ bool ida_iatt_combine(struct iatt * dst, struct iatt * src1,
     }
 
     *dst = *src1;
-    if (dst->ia_blksize < src2->ia_blksize)
-    {
-        dst->ia_blksize = src2->ia_blksize;
-    }
+
+    dst->ia_blksize = blksize;
+    dst->ia_blocks = blocks1 + blocks2;
 
     ida_iatt_time_merge(&dst->ia_atime, &dst->ia_atime_nsec, src2->ia_atime,
                         src2->ia_atime_nsec);
@@ -150,9 +170,4 @@ void ida_iatt_adjust(ida_local_t * local, struct iatt * dst, dict_t * xattr, ino
 
 void ida_iatt_rebuild(ida_private_t * ida, struct iatt * iatt)
 {
-    if (iatt->ia_type == IA_IFREG)
-    {
-        iatt->ia_size *= ida->fragments;
-        iatt->ia_blocks *= ida->fragments;
-    }
 }
