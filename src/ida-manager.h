@@ -156,6 +156,7 @@ struct _ida_request
     uintptr_t           sent;
     sys_lock_t          lock;
     struct list_head    answers;
+    int32_t             completed;
 };
 
 struct _ida_answer

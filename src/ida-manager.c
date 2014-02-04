@@ -522,6 +522,23 @@ void ida_complete(ida_request_t * req)
     }
 }
 
+void ida_unwind(ida_request_t * req, err_t error, uintptr_t * data)
+{
+    if (atomic_xchg(&req->completed, 1, memory_order_seq_cst) == 0)
+    {
+        if (error == 0)
+        {
+            sys_gf_unwind(req->frame, 0, 0, NULL, NULL, (uintptr_t *)req,
+                          data);
+        }
+        else
+        {
+            sys_gf_unwind_error(req->frame, error, NULL, NULL, NULL,
+                                (uintptr_t *)req, data);
+        }
+    }
+}
+
 SYS_LOCK_CREATE(__ida_dispatch_cbk, ((uintptr_t *, io),
                                      (ida_private_t *, ida),
                                      (ida_request_t *, req),
@@ -553,6 +570,10 @@ SYS_LOCK_CREATE(__ida_dispatch_cbk, ((uintptr_t *, io),
 
             goto merged;
         }
+        else
+        {
+            logW("IDA: combine failed");
+        }
     }
 
     ans = req->handlers->copy(io);
@@ -569,16 +590,13 @@ merged:
         ret = req->handlers->rebuild(ida, req, ans);
         if (ret >= 0)
         {
-            sys_gf_unwind(req->frame, 0, 0, NULL, NULL,
-                          (uintptr_t *)req, (uintptr_t *)ans + IDA_ANS_SIZE);
+            ida_unwind(req, 0, (uintptr_t *)ans + IDA_ANS_SIZE);
         }
         else
         {
             logE("IDA: rebuild failed");
             args->op_ret = ret;
-            sys_gf_unwind_error(req->frame, EIO, NULL, NULL, NULL,
-                                (uintptr_t *)req,
-                                (uintptr_t *)ans + IDA_ANS_SIZE);
+            ida_unwind(req, EIO, (uintptr_t *)ans + IDA_ANS_SIZE);
         }
     }
 
@@ -632,8 +650,7 @@ void ida_dispatch_incremental(ida_private_t * ida, ida_request_t * req)
     else
     {
         logE("IDA: incremental dispatch failed");
-        sys_gf_unwind_error(req->frame, EIO, NULL, NULL, NULL,
-                            (uintptr_t *)req, (uintptr_t *)req + IDA_REQ_SIZE);
+        ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
     }
 }
 
@@ -642,38 +659,38 @@ void ida_dispatch_all(ida_private_t * ida, ida_request_t * req)
     uintptr_t mask;
     int32_t idx, count;
 
-    if (req->sent != 0)
+    SYS_TEST(
+        req->sent == 0,
+        EIO,
+        D(),
+        GOTO(failed)
+    );
+
+    mask = ida->xl_up;
+    count = sys_bits_count64(mask);
+    if (count >= ida->fragments)
     {
-        ida_dispatch_incremental(ida, req);
-    }
-    else
-    {
-        mask = ida->xl_up;
-        count = sys_bits_count64(mask);
-        if (count >= ida->fragments)
+        atomic_add(&req->pending, count, memory_order_seq_cst);
+        req->sent = mask;
+        do
         {
-            atomic_add(&req->pending, count, memory_order_seq_cst);
-            req->sent = mask;
-            do
-            {
-                idx = sys_bits_first_one_index64(mask);
-                sys_gf_wind(req->frame, NULL, ida->xl_list[idx],
-                            SYS_CBK(ida_dispatch_cbk, (ida, req, idx)),
-                            NULL, (uintptr_t *)req,
-                            (uintptr_t *)req + IDA_REQ_SIZE);
-                mask ^= 1ULL << idx;
-            } while (mask != 0);
-            dfc_end(req->txn, count);
-        }
-        else
-        {
-            dfc_end(req->txn, 0);
-            logE("IDA: dispatch to all failed");
-            sys_gf_unwind_error(req->frame, EIO, NULL, NULL, NULL,
-                                (uintptr_t *)req,
-                                (uintptr_t *)req + IDA_REQ_SIZE);
-        }
+            idx = sys_bits_first_one_index64(mask);
+            sys_gf_wind(req->frame, NULL, ida->xl_list[idx],
+                        SYS_CBK(ida_dispatch_cbk, (ida, req, idx)),
+                        NULL, (uintptr_t *)req,
+                        (uintptr_t *)req + IDA_REQ_SIZE);
+            mask ^= 1ULL << idx;
+        } while (mask != 0);
+        dfc_end(req->txn, count);
+
+        return;
     }
+
+    dfc_end(req->txn, 0);
+    logE("IDA: dispatch to all failed");
+
+failed:
+    ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
 }
 
 void ida_dispatch_minimum(ida_private_t * ida, ida_request_t * req)
@@ -681,6 +698,7 @@ void ida_dispatch_minimum(ida_private_t * ida, ida_request_t * req)
     uintptr_t mask;
     int32_t idx, i, count;
 
+    // TODO: if request is DFC managed, we have to fully restart it.
     if (req->sent != 0)
     {
         ida_dispatch_incremental(ida, req);
@@ -709,9 +727,7 @@ void ida_dispatch_minimum(ida_private_t * ida, ida_request_t * req)
         {
             dfc_end(req->txn, 0);
             logE("IDA: dispatch to minimum failed");
-            sys_gf_unwind_error(req->frame, EIO, NULL, NULL, NULL,
-                                (uintptr_t *)req,
-                                (uintptr_t *)req + IDA_REQ_SIZE);
+            ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
         }
     }
 }
@@ -838,8 +854,7 @@ failed_txn:
     dfc_end(req->txn, 0);
 failed:
     logE("WRITE failed in __ida_dispatch_write");
-    sys_gf_unwind_error(req->frame, EIO, NULL, NULL, NULL,
-                        (uintptr_t *)req, (uintptr_t *)req + IDA_REQ_SIZE);
+    ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
 
     SYS_FREE_ALIGNED(buffer);
 }
@@ -879,6 +894,13 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
     uint8_t * buffer;
     off_t user_offs, offs;
     size_t user_size, size, head, tail, tmp;
+
+    SYS_TEST(
+        req->sent == 0,
+        EIO,
+        D(),
+        GOTO(failed)
+    );
 
     args = (SYS_GF_FOP_CALL_TYPE(writev) *)((uintptr_t *)req + IDA_REQ_SIZE);
 
@@ -928,6 +950,5 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
 
 failed:
     logE("WRITE failed in ida_dispatch_write");
-    sys_gf_unwind_error(req->frame, EIO, NULL, NULL, NULL, (uintptr_t *)req,
-                        (uintptr_t *)req + IDA_REQ_SIZE);
+    ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
 }

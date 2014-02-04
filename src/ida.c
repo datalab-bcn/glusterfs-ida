@@ -405,6 +405,7 @@ void fini(xlator_t * this)
         req->handlers = &ida_handlers_##_fop; \
         req->txn = txn; \
         req->sent = 0; \
+        req->completed = 0; \
         sys_lock_initialize(&req->lock); \
         INIT_LIST_HEAD(&req->answers); \
         switch (IDA_FOP_COUNT_##_num) \
