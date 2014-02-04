@@ -415,8 +415,15 @@ void fini(xlator_t * this)
             case IDA_FOP_COUNT_ALL: req->required = ida->nodes; break; \
         } \
         req->pending = 0; \
-        ida_prepare_##_fop(ida, req); \
-        ida_handlers_##_fop.dispatch(ida, req); \
+        if (ida_prepare_##_fop(ida, req)) \
+        { \
+            ida_handlers_##_fop.dispatch(ida, req); \
+        } \
+        else \
+        { \
+            sys_gf_##_fop##_unwind_error(frame, EIO, NULL); \
+            sys_gf_args_free((uintptr_t *)req); \
+        } \
     } \
     int32_t ida_##_fop(call_frame_t * frame, xlator_t * xl, \
                        SYS_ARGS_DECL((SYS_GF_ARGS_##_fop))) \
