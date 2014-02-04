@@ -1413,6 +1413,7 @@ bool ida_prepare_truncate(ida_private_t * ida, ida_request_t * req)
 
     tmp = ida->block_size - 1;
     args->offset += tmp - (args->offset + tmp) % ida->block_size;
+    args->offset /= ida->fragments;
 
     return true;
 }
@@ -1480,6 +1481,7 @@ bool ida_prepare_ftruncate(ida_private_t * ida, ida_request_t * req)
 
     tmp = ida->block_size - 1;
     args->offset += tmp - (args->offset + tmp) % ida->block_size;
+    args->offset /= ida->fragments;
 
     return true;
 }
