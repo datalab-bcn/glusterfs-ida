@@ -26,7 +26,6 @@
 
 #include "ida-common.h"
 #include "ida-mem-types.h"
-#include "ida-type-dirent.h"
 #include "ida-rabin.h"
 #include "ida-manager.h"
 #include "ida-combine.h"

@@ -27,7 +27,6 @@
 #include "ida-type-dict.h"
 #include "ida-type-inode.h"
 #include "ida-type-fd.h"
-#include "ida-type-dirent.h"
 #include "ida-type-iatt.h"
 #include "ida-type-lock.h"
 #include "ida-type-statvfs.h"
