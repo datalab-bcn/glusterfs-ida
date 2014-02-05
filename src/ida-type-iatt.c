@@ -170,5 +170,4 @@ void ida_iatt_adjust(ida_local_t * local, struct iatt * dst, dict_t * xattr, ino
 
 void ida_iatt_rebuild(ida_private_t * ida, struct iatt * iatt)
 {
-    iatt->ia_size *= ida->fragments;
 }
