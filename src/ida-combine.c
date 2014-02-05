@@ -909,11 +909,9 @@ bool ida_combine_readv(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     next = req->handlers->copy(data);
     next->count = 0;
     next->id = idx;
-    next->next = NULL;
+    next->next = ans->next;
 
     ans->next = next;
-
-    list_add_tail(&ans->list, &req->answers);
 
     return true;
 }

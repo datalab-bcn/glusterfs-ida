@@ -511,9 +511,11 @@ void ida_complete(ida_request_t * req)
         list_for_each_entry_safe(ans, tmp, &req->answers, list)
         {
             list_del_init(&ans->list);
-            for (next = ans->next; next != NULL; next = next->next)
+            while (ans->next != NULL)
             {
-                sys_gf_args_free((uintptr_t *)ans);
+                next = ans->next;
+                ans->next = next->next;
+                sys_gf_args_free((uintptr_t *)next);
             }
             sys_gf_args_free((uintptr_t *)ans);
         }
