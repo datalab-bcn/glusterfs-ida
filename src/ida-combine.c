@@ -74,6 +74,11 @@ bool ida_prepare_create(ida_private_t * ida, ida_request_t * req)
         RETVAL(false)
     );
 
+    if ((args->flags & O_ACCMODE) == O_WRONLY)
+    {
+        args->flags = (args->flags & ~O_ACCMODE) | O_RDWR;
+    }
+
     return true;
 }
 
