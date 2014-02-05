@@ -735,21 +735,26 @@ bool ida_combine_readdir(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     {
         return false;
     }
-/*
-    if (dst->op_ret >= 0)
-    {
-        if (!ida_dirent_combine(&dst->entries, &src->entries))
-        {
-            return false;
-        }
-    }
-*/
+
     return true;
 }
 
 int32_t ida_rebuild_readdir(ida_private_t * ida, ida_request_t * req,
                             ida_answer_t * ans)
 {
+    SYS_GF_CBK_CALL_TYPE(readdir) * args;
+    gf_dirent_t * entry;
+
+    args = (SYS_GF_CBK_CALL_TYPE(readdir) *)((uintptr_t *)ans + IDA_ANS_SIZE);
+
+    if (args->op_ret >= 0)
+    {
+        list_for_each_entry(entry, &args->entries.list, list)
+        {
+            ida_iatt_rebuild(ida, &entry->d_stat);
+        }
+    }
+
     return 0;
 }
 
@@ -772,21 +777,26 @@ bool ida_combine_readdirp(ida_request_t * req, uint32_t idx,
     {
         return false;
     }
-/*
-    if (dst->op_ret >= 0)
-    {
-        if (!ida_dirent_combine(&dst->entries, &src->entries))
-        {
-            return false;
-        }
-    }
-*/
+
     return true;
 }
 
 int32_t ida_rebuild_readdirp(ida_private_t * ida, ida_request_t * req,
                              ida_answer_t * ans)
 {
+    SYS_GF_CBK_CALL_TYPE(readdirp) * args;
+    gf_dirent_t * entry;
+
+    args = (SYS_GF_CBK_CALL_TYPE(readdirp) *)((uintptr_t *)ans + IDA_ANS_SIZE);
+
+    if (args->op_ret >= 0)
+    {
+        list_for_each_entry(entry, &args->entries.list, list)
+        {
+            ida_iatt_rebuild(ida, &entry->d_stat);
+        }
+    }
+
     return 0;
 }
 
