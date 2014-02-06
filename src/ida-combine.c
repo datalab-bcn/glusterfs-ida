@@ -1022,14 +1022,14 @@ bool ida_combine_readv(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
         }
 
         memcpy(&dst->stbuf, &stbuf, sizeof(dst->stbuf));
+
+        next = req->handlers->copy(data);
+        next->count = 0;
+        next->id = idx;
+        next->next = ans->next;
+
+        ans->next = next;
     }
-
-    next = req->handlers->copy(data);
-    next->count = 0;
-    next->id = idx;
-    next->next = ans->next;
-
-    ans->next = next;
 
     return true;
 }
