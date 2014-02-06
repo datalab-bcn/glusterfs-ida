@@ -448,6 +448,41 @@ int32_t ida_rebuild_fentrylk(ida_private_t * ida, ida_request_t * req,
 
 bool ida_prepare_lookup(ida_private_t * ida, ida_request_t * req)
 {
+    SYS_GF_FOP_CALL_TYPE(lookup) * args;
+    data_t * data;
+    size_t size, tmp;
+
+    args = (SYS_GF_FOP_CALL_TYPE(lookup) *)((uintptr_t *)req + IDA_REQ_SIZE);
+    if (sys_dict_del(&args->xdata, GF_CONTENT_KEY, &data) == 0)
+    {
+        size = data_to_uint64(data);
+        data_unref(data);
+
+        req->size = size;
+        tmp = ida->block_size - 1;
+        size += tmp - (size + tmp) % ida->block_size;
+        req->data = size;
+        size /= ida->fragments;
+
+        SYS_PTR(
+            &data, data_from_uint64, (size),
+            ENOMEM,
+            E(),
+            RETVAL(true)
+        );
+
+        SYS_CALL(
+            sys_dict_set, (&args->xdata, GF_CONTENT_KEY, data, NULL),
+            E(),
+            GOTO(failed)
+        );
+    }
+
+    return true;
+
+failed:
+    data_unref(data);
+
     return true;
 }
 
@@ -455,6 +490,7 @@ bool ida_combine_lookup(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
                         uintptr_t * data)
 {
     struct iatt buf, postparent;
+    ida_answer_t * next;
     SYS_GF_CBK_CALL_TYPE(lookup) * dst;
     SYS_GF_WIND_CBK_TYPE(lookup) * src;
 
@@ -479,6 +515,13 @@ bool ida_combine_lookup(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
 
         memcpy(&dst->buf, &buf, sizeof(dst->buf));
         memcpy(&dst->postparent, &postparent, sizeof(dst->postparent));
+
+        next = req->handlers->copy(data);
+        next->count = 0;
+        next->id = idx;
+        next->next = ans->next;
+
+        ans->next = next;
     }
 
     return true;
@@ -487,14 +530,89 @@ bool ida_combine_lookup(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
 int32_t ida_rebuild_lookup(ida_private_t * ida, ida_request_t * req,
                            ida_answer_t * ans)
 {
-    SYS_GF_CBK_CALL_TYPE(lookup) * args;
+    SYS_GF_CBK_CALL_TYPE(lookup) * args, * tmp;
+    ida_answer_t * item;
+    uint8_t * blocks[ans->count];
+    uint32_t values[ans->count];
+    uint8_t * buff;
+    data_t * data;
+    size_t size;
+    int32_t i;
 
     args = (SYS_GF_CBK_CALL_TYPE(lookup) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
         ida_iatt_rebuild(ida, &args->buf);
         ida_iatt_rebuild(ida, &args->postparent);
+
+        size = SIZE_MAX;
+        for (i = 0, item = ans;
+             (item != NULL) && (i < ida->fragments);
+             item = item->next)
+        {
+            tmp = (SYS_GF_CBK_CALL_TYPE(lookup) *)((uintptr_t *)item +
+                                                   IDA_ANS_SIZE);
+            if (sys_dict_get(tmp->xdata, GF_CONTENT_KEY, &data) == 0)
+            {
+                values[i] = item->id;
+                blocks[i] = (uint8_t *)data->data;
+
+                if (size > data->len)
+                {
+                    size = data->len;
+                }
+
+                i++;
+            }
+        }
+
+        sys_dict_del(&args->xdata, GF_CONTENT_KEY, NULL);
+
+        if (i >= ida->fragments)
+        {
+            size -= size % (ida->block_size / ida->fragments);
+            if (size > 0)
+            {
+                SYS_ALLOC(
+                    &buff, req->data, sys_mt_uint8_t,
+                    E(),
+                    GOTO(done)
+                );
+
+                ida_rabin_merge(size, ida->fragments, values, blocks, buff);
+
+                size *= ida->fragments;
+                if (size > req->size)
+                {
+                    size = req->size;
+                }
+
+                SYS_PTR(
+                    &data, data_from_dynptr, (buff, size),
+                    ENOMEM,
+                    E(),
+                    GOTO(failed_buff)
+                );
+
+                SYS_CALL(
+                    sys_dict_set, (&args->xdata, GF_CONTENT_KEY, data, NULL),
+                    E(),
+                    GOTO(failed_data)
+                );
+            }
+        }
     }
+
+done:
+    return 0;
+
+failed_buff:
+    SYS_FREE(buff);
+
+    return 0;
+
+failed_data:
+    data_unref(data);
 
     return 0;
 }
