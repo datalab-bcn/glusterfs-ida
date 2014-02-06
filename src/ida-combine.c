@@ -871,7 +871,7 @@ bool ida_prepare_readv(ida_private_t * ida, ida_request_t * req)
     size += tail;
 
     req->data = head;
-    req->flags = args->size;
+    req->size = args->size;
 
     args->offset = offs / ida->fragments;
     args->size = size / ida->fragments;
@@ -967,12 +967,16 @@ int32_t ida_rebuild_readv(ida_private_t * ida, ida_request_t * req,
 
         args->vector.iov_base = iobuf->ptr + req->data;
         size = args->vector.iov_len * ida->fragments - req->data;
-        args->vector.iov_len = SYS_MIN(size, req->flags);
+        if (size > req->size)
+        {
+            size = req->size;
+        }
+        args->vector.iov_len = size;
 
         iobref_unref(args->iobref);
         args->iobref = iobref;
 
-        args->op_ret *= ida->fragments;
+        args->op_ret = size;
     }
 
     return 0;
@@ -1663,6 +1667,7 @@ int32_t ida_rebuild_writev(ida_private_t * ida, ida_request_t * req,
         ida_iatt_rebuild(ida, &args->postbuf);
 
         args->op_ret *= ida->fragments;
+        args->op_ret -= req->size;
     }
 
     return 0;

@@ -151,6 +151,7 @@ struct _ida_request
     dfc_transaction_t * txn;
     int32_t             required;
     int32_t             pending;
+    size_t              size;
     uintptr_t           flags;
     uintptr_t           data;
     uintptr_t           sent;

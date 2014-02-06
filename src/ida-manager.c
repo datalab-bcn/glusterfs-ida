@@ -800,6 +800,8 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
         GOTO(failed_txn)
     );
 
+    req->size = head + tail;
+
     atomic_add(&req->pending, count, memory_order_seq_cst);
     req->sent = mask;
     i = 0;
