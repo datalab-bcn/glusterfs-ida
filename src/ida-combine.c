@@ -1039,17 +1039,50 @@ int32_t ida_rebuild_readv(ida_private_t * ida, ida_request_t * req,
 {
     SYS_GF_CBK_CALL_TYPE(readv) * args, * tmp;
     ida_answer_t * item;
+    uint8_t * ptr;
     uint8_t * blocks[ans->count];
+    uint8_t * ptrs[ans->count];
     uint32_t values[ans->count];
     struct iobref * iobref;
     struct iobuf * iobuf;
-    size_t size;
-    int32_t i;
+    size_t size, min, max, slice;
+    int32_t i, j;
+
+    memset(blocks, 0, sizeof(blocks));
 
     args = (SYS_GF_CBK_CALL_TYPE(readv) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
+        struct iovec vector[args->vector.count * ida->fragments];
+
         ida_iatt_rebuild(ida, &args->stbuf);
+
+        min = SIZE_MAX;
+        for (i = 0, item = ans; item != NULL; i++, item = item->next)
+        {
+            tmp = (SYS_GF_CBK_CALL_TYPE(readv) *)((uintptr_t *)item +
+                                                  IDA_ANS_SIZE);
+            values[i] = item->id;
+            size = iov_length(tmp->vector.iovec, tmp->vector.count);
+            if (min > size)
+            {
+                min = size;
+            }
+            SYS_ALLOC_ALIGNED(
+                &ptr, size, 16, sys_mt_uint8_t,
+                E(),
+                GOTO(failed)
+            );
+            ptrs[i] = blocks[i] = ptr;
+            for (j = 0; j < tmp->vector.count; j++)
+            {
+                memcpy(ptr, tmp->vector.iovec[j].iov_base,
+                       tmp->vector.iovec[j].iov_len);
+                ptr += tmp->vector.iovec[j].iov_len;
+            }
+        }
+        size = min % (ida->block_size / ida->fragments);
+        min -= size;
 
         SYS_PTR(
             &iobref, iobref_new, (),
@@ -1057,42 +1090,63 @@ int32_t ida_rebuild_readv(ida_private_t * ida, ida_request_t * req,
             E(),
             GOTO(failed)
         );
-        SYS_PTR(
-            &iobuf, iobuf_get, (ida->xl->ctx->iobuf_pool),
-            ENOMEM,
-            E(),
-            GOTO(failed_iobref)
-        );
-        SYS_CODE(
-            iobref_add, (iobref, iobuf),
-            ENOMEM,
-            E(),
-            GOTO(failed_iobuf)
-        );
-
-        iobuf_unref(iobuf);
-
-        for (i = 0, item = ans; item != NULL; i++, item = item->next)
+        size = min;
+        max = iobpool_default_pagesize(
+                                (struct iobuf_pool *)ida->xl->ctx->iobuf_pool);
+        max /= ida->fragments;
+        j = 0;
+        do
         {
-            tmp = (SYS_GF_CBK_CALL_TYPE(readv) *)((uintptr_t *)item +
-                                                  IDA_ANS_SIZE);
-            values[i] = item->id;
-            blocks[i] = tmp->vector.iov_base;
-        }
+            SYS_PTR(
+                &iobuf, iobuf_get, (ida->xl->ctx->iobuf_pool),
+                ENOMEM,
+                E(),
+                GOTO(failed_iobref)
+            );
+            SYS_CODE(
+                iobref_add, (iobref, iobuf),
+                ENOMEM,
+                E(),
+                GOTO(failed_iobuf)
+            );
 
-        ida_rabin_merge(args->vector.iov_len, ida->fragments, values, blocks,
-                        iobuf->ptr);
+            slice = size;
+            if (slice > max)
+            {
+                slice = max;
+            }
+            ida_rabin_merge(slice, ida->fragments, values, ptrs, iobuf->ptr);
 
-        args->vector.iov_base = iobuf->ptr + req->data;
-        size = args->vector.iov_len * ida->fragments - req->data;
-        if (size > req->size)
+            size -= slice;
+            for (i = 0; i < ans->count; i++)
+            {
+                ptrs[i] += slice;
+            }
+            vector[j].iov_base = iobuf->ptr;
+            vector[j].iov_len = slice;
+            j++;
+
+            iobuf_unref(iobuf);
+        } while (size > 0);
+
+        vector[0].iov_base += req->data;
+        size = min * ida->fragments - req->data;
+        while (size > req->size)
         {
-            size = req->size;
+            if (size - req->size >= vector[j - 1].iov_len)
+            {
+                size -= vector[--j].iov_len;
+            }
+            else
+            {
+                vector[j - 1].iov_len -= size - req->size;
+                size = req->size;
+            }
         }
-        args->vector.iov_len = size;
 
         iobref_unref(args->iobref);
         args->iobref = iobref;
+        sys_iovec_acquire(&args->vector, vector, j);
 
         args->op_ret = size;
     }
@@ -1104,6 +1158,13 @@ failed_iobuf:
 failed_iobref:
     iobref_unref(iobref);
 failed:
+    for (i = 0; i < ans->count; i++)
+    {
+        if (blocks[i] != NULL)
+        {
+            SYS_FREE_ALIGNED(blocks[i]);
+        }
+    }
     return -1;
 }
 
@@ -1733,7 +1794,8 @@ bool ida_prepare_writev(ida_private_t * ida, ida_request_t * req)
 
     SYS_CALL(
         sys_dict_set_uint64, (&args->xdata, DFC_XATTR_SIZE,
-                              iov_length(&args->vector, args->count),
+                              iov_length(args->vector.iovec,
+                                         args->vector.count),
                               NULL),
         E(),
         RETVAL(false)

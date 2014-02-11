@@ -284,11 +284,12 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
                           size_t head, size_t tail)
 {
     SYS_GF_FOP_CALL_TYPE(writev) * args;
-    struct iovec vector[1];
     struct iobref * iobref;
     struct iobuf * iobuf;
+    uint8_t * ptr;
+    ssize_t remaining, slice, pagesize, maxsize;
     uintptr_t mask;
-    int32_t idx, i, count;
+    int32_t idx, i, j, count;
 
     if (atomic_dec(&req->data, memory_order_seq_cst) != 1)
     {
@@ -313,7 +314,13 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
 
     args = (SYS_GF_FOP_CALL_TYPE(writev) *)((uintptr_t *)req + IDA_REQ_SIZE);
 
-    memcpy(buffer + head, args->vector.iov_base, args->vector.iov_len);
+    ptr = buffer + head;
+    for (i = 0; i < args->vector.count; i++)
+    {
+        memcpy(ptr, args->vector.iovec[i].iov_base,
+               args->vector.iovec[i].iov_len);
+        ptr += args->vector.iovec[i].iov_len;
+    }
 
     SYS_CALL(
         dfc_begin, (ida->dfc, &req->txn),
@@ -330,37 +337,59 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
 
     atomic_add(&req->pending, count, memory_order_seq_cst);
     req->sent = mask;
+    pagesize = iobpool_default_pagesize(
+                                (struct iobuf_pool *)ida->xl->ctx->iobuf_pool);
+    maxsize = pagesize * ida->fragments;
     i = 0;
     do
     {
+        struct iovec vector[args->vector.count];
+
+        idx = sys_bits_first_one_index64(mask);
+
         SYS_PTR(
             &iobref, iobref_new, (),
             ENOMEM,
             E(),
             GOTO(failed_txn)
         );
-        SYS_PTR(
-            &iobuf, iobuf_get, (ida->xl->ctx->iobuf_pool),
-            ENOMEM,
-            E(),
-            GOTO(failed_iobref)
-        );
-        SYS_CODE(
-            iobref_add, (iobref, iobuf),
-            ENOMEM,
-            E(),
-            GOTO(failed_iobuf)
-        );
-        iobuf_unref(iobuf);
+        remaining = size;
+        j = 0;
+        ptr = buffer;
+        do
+        {
+            SYS_PTR(
+                &iobuf, iobuf_get, (ida->xl->ctx->iobuf_pool),
+                ENOMEM,
+                E(),
+                GOTO(failed_iobref)
+            );
+            SYS_CODE(
+                iobref_add, (iobref, iobuf),
+                ENOMEM,
+                E(),
+                GOTO(failed_iobuf)
+            );
 
-        idx = sys_bits_first_one_index64(mask);
-        ida_rabin_split(size, ida->fragments, idx, buffer, iobuf->ptr);
+            slice = remaining;
+            if (slice > maxsize)
+            {
+                slice = maxsize;
+            }
+            ida_rabin_split(slice, ida->fragments, idx, ptr, iobuf->ptr);
+            ptr += slice;
 
-        vector[0].iov_base = iobuf->ptr;
-        vector[0].iov_len = size / ida->fragments;
+            vector[j].iov_base = iobuf->ptr;
+            vector[j].iov_len = slice / ida->fragments;
+            j++;
+
+            iobuf_unref(iobuf);
+
+            remaining -= slice;
+        } while (remaining > 0);
 
         SYS_IO(sys_gf_writev_wind, (req->frame, NULL, ida->xl_list[idx],
-                                    args->fd, vector, 1,
+                                    args->fd, vector, j,
                                     offset / ida->fragments, args->flags,
                                     iobref, args->xdata),
                SYS_CBK(ida_dispatch_write_cbk, (ida, req, idx)));
@@ -412,7 +441,7 @@ SYS_CBK_CREATE(ida_dispatch_write_readv_cbk, io, ((ida_private_t *, ida),
     }
     else
     {
-        memcpy(ptr, args->vector.iov_base, ida->block_size);
+        memcpy(ptr, args->vector.iovec[0].iov_base, ida->block_size);
     }
 
     __ida_dispatch_write(ida, req, buffer, offset, size, head, tail);
@@ -435,7 +464,7 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
     args = (SYS_GF_FOP_CALL_TYPE(writev) *)((uintptr_t *)req + IDA_REQ_SIZE);
 
     user_offs = args->offset;
-    user_size = iov_length(&args->vector, args->count);
+    user_size = iov_length(args->vector.iovec, args->vector.count);
 
     head = user_offs % ida->block_size;
     offs = user_offs - head;
