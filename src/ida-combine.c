@@ -1123,7 +1123,7 @@ int32_t ida_rebuild_readv(ida_private_t * ida, ida_request_t * req,
                 ptrs[i] += slice;
             }
             vector[j].iov_base = iobuf->ptr;
-            vector[j].iov_len = slice;
+            vector[j].iov_len = slice * ida->fragments;
             j++;
 
             iobuf_unref(iobuf);
