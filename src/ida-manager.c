@@ -162,7 +162,6 @@ SYS_CBK_CREATE(ida_dispatch_cbk, io, ((ida_private_t *, ida),
 
 void ida_dispatch_incremental(ida_private_t * ida, ida_request_t * req)
 {
-    dict_t * xdata;
     uintptr_t mask;
     uint32_t idx;
 
@@ -193,7 +192,6 @@ failed:
 
 void ida_dispatch_all(ida_private_t * ida, ida_request_t * req)
 {
-    dict_t * xdata;
     uintptr_t mask;
     int32_t idx, count;
 
@@ -238,7 +236,6 @@ failed:
 
 void ida_dispatch_minimum(ida_private_t * ida, ida_request_t * req)
 {
-    dict_t * xdata;
     uintptr_t mask;
     int32_t idx, i, count;
 
@@ -308,7 +305,6 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
     SYS_GF_FOP_CALL_TYPE(writev) * args;
     struct iobref * iobref;
     struct iobuf * iobuf;
-    dict_t * xdata;
     uint8_t * ptr;
     ssize_t remaining, slice, pagesize, maxsize;
     uintptr_t mask;
@@ -345,12 +341,6 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
         ptr += args->vector.iovec[i].iov_len;
     }
 
-    SYS_CALL(
-        dfc_begin, (ida->dfc, mask, &req->txn),
-        E(),
-        GOTO(failed)
-    );
-
     req->size = head + tail;
 
     atomic_add(&req->pending, count, memory_order_seq_cst);
@@ -369,7 +359,7 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
             &iobref, iobref_new, (),
             ENOMEM,
             E(),
-            GOTO(failed_txn)
+            GOTO(failed)
         );
         remaining = size;
         j = 0;
@@ -431,9 +421,8 @@ failed_iobuf:
     iobuf_unref(iobuf);
 failed_iobref:
     iobref_unref(iobref);
-failed_txn:
-    dfc_end(req->txn, 0);
 failed:
+    dfc_end(req->txn, 0);
     logE("WRITE failed in __ida_dispatch_write");
     ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
 
@@ -473,8 +462,10 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
 {
     SYS_GF_FOP_CALL_TYPE(writev) * args;
     uint8_t * buffer;
+    dict_t * xdata;
     off_t user_offs, offs;
     size_t user_size, size, head, tail, tmp;
+    uintptr_t mask;
 
     SYS_TEST(
         req->sent == 0,
@@ -503,32 +494,55 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
         GOTO(failed)
     );
 
+    mask = ida->xl_up;
+    SYS_CALL(
+        dfc_begin, (ida->dfc, mask, *req->xdata, &req->txn),
+        E(),
+        GOTO(failed_buffer)
+    );
+
     if (head > 0)
     {
+        xdata = NULL;
+        SYS_CALL(
+            dfc_attach, (req->txn, 0, &xdata),
+            E(),
+            GOTO(failed_buffer)
+        );
         SYS_IO(sys_gf_readv_wind, (req->frame, NULL, ida->xl, args->fd,
-                                   ida->block_size, offs, 0, NULL),
+                                   ida->block_size, offs, 0, xdata),
                SYS_CBK(ida_dispatch_write_readv_cbk, (ida, req, buffer,
                                                       buffer, offs, size,
                                                       head, tail)
                       ));
+        sys_dict_release(xdata);
     }
 
     if ((tail > 0) && (size > ida->block_size))
     {
+        xdata = NULL;
+        SYS_CALL(
+            dfc_attach, (req->txn, 0, &xdata),
+            E(),
+            GOTO(failed_buffer)
+        );
         SYS_IO(sys_gf_readv_wind, (req->frame, NULL, ida->xl, args->fd,
                                    ida->block_size,
-                                   offs + size - ida->block_size, 0, NULL),
+                                   offs + size - ida->block_size, 0, xdata),
                SYS_CBK(ida_dispatch_write_readv_cbk, (ida, req, buffer,
                                                       buffer + size -
                                                       ida->block_size, offs,
                                                       size, head, tail)
                       ));
+        sys_dict_release(xdata);
     }
 
     __ida_dispatch_write(ida, req, buffer, offs, size, head, tail);
 
     return;
 
+failed_buffer:
+    SYS_FREE(buffer);
 failed:
     logE("WRITE failed in ida_dispatch_write");
     ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
