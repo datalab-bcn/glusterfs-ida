@@ -397,14 +397,18 @@ void fini(xlator_t * this)
     { \
         ida_private_t * ida; \
         ida_request_t * req; \
+        SYS_GF_FOP_CALL_TYPE(_fop) * args; \
         ida = this->private; \
         req = (ida_request_t *)SYS_GF_FOP_CALL(_fop, IDA_REQ_SIZE); \
+        args = (SYS_GF_FOP_CALL_TYPE(_fop) *)((uintptr_t *)req + \
+                                              IDA_REQ_SIZE); \
         req->frame = frame; \
         req->xl = this; \
         req->handlers = &ida_handlers_##_fop; \
         req->txn = txn; \
         req->sent = 0; \
         req->completed = 0; \
+        req->xdata = &args->xdata; \
         sys_lock_initialize(&req->lock); \
         INIT_LIST_HEAD(&req->answers); \
         switch (IDA_FOP_COUNT_##_num) \
@@ -428,27 +432,25 @@ void fini(xlator_t * this)
                        SYS_ARGS_DECL((SYS_GF_ARGS_##_fop))) \
     { \
         dfc_transaction_t * txn = NULL; \
+        int32_t num; \
         ida_private_t * ida = xl->private; \
-        sys_dict_acquire(&xdata, xdata); \
         if (IDA_FOP_MODE_##_num##_##_dfc != 0) \
         { \
+            switch (IDA_FOP_COUNT_##_num) \
+            { \
+                case IDA_FOP_COUNT_INC: num = 1; break; \
+                case IDA_FOP_COUNT_MIN: num = ida->fragments; break; \
+                case IDA_FOP_COUNT_ALL: num = ida->nodes; break; \
+            } \
             SYS_CALL( \
-                dfc_begin, (ida->dfc, &txn), \
+                dfc_begin, (ida->dfc, (1ULL << num) - 1ULL, &txn), \
                 E(), \
                 GOTO(failed) \
-            ); \
-            SYS_CALL( \
-                dfc_attach, (txn, &xdata), \
-                E(), \
-                GOTO(failed_txn) \
             ); \
         } \
         SYS_ASYNC(__ida_##_fop, (txn, frame, xl, \
                                  SYS_ARGS_NAMES((SYS_GF_ARGS_##_fop)))); \
-        sys_dict_release(xdata); \
         return 0; \
-    failed_txn: \
-        dfc_end(txn, 0); \
     failed: \
         logE("IDA: init failed"); \
         sys_gf_##_fop##_unwind_error(frame, EIO, NULL); \

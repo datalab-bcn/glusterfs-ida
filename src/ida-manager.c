@@ -162,6 +162,7 @@ SYS_CBK_CREATE(ida_dispatch_cbk, io, ((ida_private_t *, ida),
 
 void ida_dispatch_incremental(ida_private_t * ida, ida_request_t * req)
 {
+    dict_t * xdata;
     uintptr_t mask;
     uint32_t idx;
 
@@ -170,20 +171,29 @@ void ida_dispatch_incremental(ida_private_t * ida, ida_request_t * req)
     {
         idx = sys_bits_first_one_index64(mask);
         req->sent |= 1ULL << idx;
+        SYS_CALL(
+            dfc_attach, (req->txn, idx, req->xdata),
+            E(),
+            GOTO(failed)
+        );
+
         atomic_inc(&req->pending, memory_order_seq_cst);
         sys_gf_wind(req->frame, NULL, ida->xl_list[idx],
                     SYS_CBK(ida_dispatch_cbk, (ida, req, idx)),
                     NULL, (uintptr_t *)req, (uintptr_t *)req + IDA_REQ_SIZE);
+
+        return;
     }
-    else
-    {
-        logE("IDA: incremental dispatch failed");
-        ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
-    }
+
+failed:
+
+    logE("IDA: incremental dispatch failed");
+    ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
 }
 
 void ida_dispatch_all(ida_private_t * ida, ida_request_t * req)
 {
+    dict_t * xdata;
     uintptr_t mask;
     int32_t idx, count;
 
@@ -203,11 +213,16 @@ void ida_dispatch_all(ida_private_t * ida, ida_request_t * req)
         do
         {
             idx = sys_bits_first_one_index64(mask);
+            mask ^= 1ULL << idx;
+            SYS_CALL(
+                dfc_attach, (req->txn, idx, req->xdata),
+                E(),
+                CONTINUE()
+            );
             sys_gf_wind(req->frame, NULL, ida->xl_list[idx],
                         SYS_CBK(ida_dispatch_cbk, (ida, req, idx)),
                         NULL, (uintptr_t *)req,
                         (uintptr_t *)req + IDA_REQ_SIZE);
-            mask ^= 1ULL << idx;
         } while (mask != 0);
         dfc_end(req->txn, count);
 
@@ -223,6 +238,7 @@ failed:
 
 void ida_dispatch_minimum(ida_private_t * ida, ida_request_t * req)
 {
+    dict_t * xdata;
     uintptr_t mask;
     int32_t idx, i, count;
 
@@ -243,12 +259,18 @@ void ida_dispatch_minimum(ida_private_t * ida, ida_request_t * req)
             {
                 idx = sys_bits_first_one_index64(mask);
                 req->sent |= 1ULL << idx;
+                mask ^= 1ULL << idx;
+                SYS_CALL(
+                    dfc_attach, (req->txn, idx, req->xdata),
+                    E(),
+                    CONTINUE()
+                );
                 sys_gf_wind(req->frame, NULL, ida->xl_list[idx],
                             SYS_CBK(ida_dispatch_cbk, (ida, req, idx)),
                             NULL, (uintptr_t *)req,
                             (uintptr_t *)req + IDA_REQ_SIZE);
-                mask ^= 1ULL << idx;
-            } while (++i < count);
+                i++;
+            } while ((i < count) && (mask != 0));
             dfc_end(req->txn, count);
         }
         else
@@ -286,6 +308,7 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
     SYS_GF_FOP_CALL_TYPE(writev) * args;
     struct iobref * iobref;
     struct iobuf * iobuf;
+    dict_t * xdata;
     uint8_t * ptr;
     ssize_t remaining, slice, pagesize, maxsize;
     uintptr_t mask;
@@ -323,14 +346,9 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
     }
 
     SYS_CALL(
-        dfc_begin, (ida->dfc, &req->txn),
+        dfc_begin, (ida->dfc, mask, &req->txn),
         E(),
         GOTO(failed)
-    );
-    SYS_CALL(
-        dfc_attach, (req->txn, &args->xdata),
-        E(),
-        GOTO(failed_txn)
     );
 
     req->size = head + tail;
@@ -388,12 +406,16 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
             remaining -= slice;
         } while (remaining > 0);
 
+        SYS_CALL(
+            dfc_attach, (req->txn, idx, req->xdata),
+            E(),
+            GOTO(failed_iobuf)
+        );
         SYS_IO(sys_gf_writev_wind, (req->frame, NULL, ida->xl_list[idx],
                                     args->fd, vector, j,
                                     offset / ida->fragments, args->flags,
-                                    iobref, args->xdata),
+                                    iobref, *req->xdata),
                SYS_CBK(ida_dispatch_write_cbk, (ida, req, idx)));
-
         iobref_unref(iobref);
 
         mask ^= 1ULL << idx;

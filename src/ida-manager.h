@@ -155,6 +155,7 @@ struct _ida_request
     uintptr_t           flags;
     uintptr_t           data;
     uintptr_t           sent;
+    dict_t **           xdata;
     sys_lock_t          lock;
     struct list_head    answers;
     int32_t             completed;
