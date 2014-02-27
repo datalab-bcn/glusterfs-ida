@@ -41,7 +41,8 @@ translator.
 Requirements
 ------------
 
-* Source code of GlusterFS 3.4.0 or later, configured, compiled and installed
+* Source code of GlusterFS 3.4.0 or newer, configured, compiled and installed
+* gcc version 4.5 or newer, make version 3.82 or newer
 * This version requires Intel SSE2 extensions to speed up the encoding (this
   requirement will be removed in the future)
 * The [glusterfs-gfsys](https://forge.gluster.org/disperse/gfsys) library
@@ -80,22 +81,58 @@ Example to create a dispersed volume of 3 bricks with one of redundancy:
 
     gluster volume create ida replica 3 node1:/brick node2:/brick node3:/brick
 
-The generated vol file should contain something like this:
+On the vol file corresponding to the client, these changes have to be done:
 
-    volume ida-replicate-0
-        type cluster/replicate
-        subvolumes ida-client-0 ida-client-1 ida-client-2
-    end-volume
-
-It should be modified this way:
-
-    volume ida-replicate-0
-        type cluster/disperse
-        option size 3:1
-        subvolumes ida-client-0 ida-client-1 ida-client-2
-    end-volume
+     volume ida-replicate-0
+    -    type cluster/replicate
+    +    type cluster/disperse
+    +    option size 3:1
+         subvolumes ida-client-0 ida-client-1 ida-client-2
+     end-volume
 
 The volume name can be also changed if desired.
+
+On the vol files corresponding to bricks, these changes have to be done:
+
+     volume ida-access-control
+         type features/access-control
+         subvolumes ida-posix
+     end-volume
+
+    +volume ida-heal
+    +    type features/heal
+    +    subvolumes ida-access-control
+    +end-volume
+    +
+     volume dispersed-locks
+         type features/locks
+    -    subvolumes ida-access-control
+    +    subvolumes ida-heal
+     end-volume
+
+    ...
+
+     volume ida-marker
+         type features/marker
+         option quota off
+         option xtime off
+         option timestamp-file /var/lib/glusterd/vols/ida/marker.tstamp
+         option volume-uuid 8c96a803-9471-4236-ad5b-0e24d9c724b3
+         subvolumes ida-index
+     end-volume
+
+    +volume ida-dfc
+    +    type features/dfc
+    +    subvolumes ida-marker
+    +end-volume
+    +
+     volume /brick
+         type debug/io-stats
+         option count-fop-hits off
+         option latency-measurement off
+    -    subvolumes ida-marker
+    +    subvolumes ida-dfc
+     end-volume
 
 
 Technical information
@@ -171,18 +208,8 @@ extended attribute is used for versioning to detect inconsistencies.
 Known problems
 --------------
 
-On files being simultaneously read and written by one or more clients without
-any external synchronization between them may result in read failures. This is
-caused by the possibility that the read operation be performed in different
-order with respect to the writes on each brick. The read needs that at least N
-fragments from N bricks match the version to return a valid result. It's not a
-problem if the read returns a mismatching version on some of the bricks (less
-than or equal to R). This is considered a very rare case now and it will be
-addressed by a more global solution in the near future.
-
-Performance is quite bad right now. There are many optimizations to incorporate
-to the translator (specially on write operations) to achieve production level
-requirements.
+Unaligned writes, specially of small size, are significantly slower than
+aligned writes. Some caching could greatly improve it.
 
 Code quality will need to be improved (some structural changes, code cleaning
 and adding documentation).
