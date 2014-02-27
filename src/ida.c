@@ -443,7 +443,8 @@ void fini(xlator_t * this)
                 case IDA_FOP_COUNT_ALL: num = ida->nodes; break; \
             } \
             SYS_CALL( \
-                dfc_begin, (ida->dfc, (1ULL << num) - 1ULL, xdata, &txn), \
+                dfc_begin, (ida->dfc, (1ULL << num) - 1ULL, NULL, xdata, \
+                            &txn), \
                 E(), \
                 GOTO(failed) \
             ); \
