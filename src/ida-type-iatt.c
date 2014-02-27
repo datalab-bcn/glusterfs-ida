@@ -62,15 +62,28 @@ bool ida_iatt_combine(struct iatt * dst, struct iatt * src1,
         (src1->ia_uid != src2->ia_uid) ||
         (src1->ia_gid != src2->ia_gid) ||
         (src1->ia_rdev != src2->ia_rdev) ||
-        (src1->ia_size != src2->ia_size) ||
         (st_mode_from_ia(src1->ia_prot, src1->ia_type) !=
          st_mode_from_ia(src2->ia_prot, src2->ia_type)) ||
+// Only check size for regular files. Directories can be identical in contents
+// but have different sizes.
+        ((src1->ia_type == IA_IFREG) && (src1->ia_size != src2->ia_size)) ||
         (uuid_compare(src1->ia_gfid, src2->ia_gfid) != 0))
     {
+        logI("IDA: iatt combine failed (%lu, %u, %u, %u, %lu, %lu, %X), "
+             "(%lu, %u, %u, %u, %lu, %lu, %X)",
+             src1->ia_ino, src1->ia_nlink, src1->ia_uid, src1->ia_gid,
+             src1->ia_rdev, src1->ia_size, st_mode_from_ia(src1->ia_prot, src1->ia_type),
+             src2->ia_ino, src2->ia_nlink, src2->ia_uid, src2->ia_gid,
+             src2->ia_rdev, src2->ia_size, st_mode_from_ia(src2->ia_prot, src2->ia_type));
         return false;
     }
 
     *dst = *src1;
+
+    if ((src1->ia_type == IA_IFREG) && (src2->ia_size > src1->ia_size))
+    {
+        dst->ia_size = src2->ia_size;
+    }
 
     dst->ia_blksize = blksize;
     dst->ia_blocks = blocks1 + blocks2;
