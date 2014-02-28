@@ -25,3 +25,8 @@ ida_la_SOURCES += ida-type-lock.c
 
 ida_la_LIBADD = $(gfdir)/libglusterfs/src/libglusterfs.la $(gfsys)/src/libgfsys.la $(gfdfc)/lib/libgfdfc.la
 
+uninstall-local:
+	rm -f $(xlatordir)/disperse.so
+
+install-data-hook:
+	ln -sf ida.so $(xlatordir)/disperse.so
