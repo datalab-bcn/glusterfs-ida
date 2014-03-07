@@ -41,9 +41,11 @@ typedef struct
     uintptr_t   node_mask;
     uintptr_t   xl_up;
     uintptr_t   locked_mask;
-    gf_lock_t   lock;
+    sys_mutex_t lock;
     xlator_t ** xl_list;
     dfc_t *     dfc;
+    uintptr_t * delay;
+    bool        up;
 } ida_private_t;
 
 struct _ida_args_cbk

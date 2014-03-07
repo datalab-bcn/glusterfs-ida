@@ -199,6 +199,8 @@ void __ida_destroy_private(xlator_t * this)
             priv->xl_list = NULL;
         }
 
+        sys_mutex_terminate(&priv->lock);
+
         SYS_FREE(priv);
         this->private = NULL;
     }
@@ -233,12 +235,39 @@ int32_t notify(xlator_t * this, int32_t event, void * data, ...)
     return dfc_default_notify(priv->dfc, this, event, data);
 }
 
+SYS_DELAY_CREATE(ida_up, ((xlator_t *, xl)))
+{
+    ida_private_t * priv;
+
+    priv = xl->private;
+
+    sys_mutex_lock(&priv->lock);
+
+    if (priv->delay != NULL)
+    {
+        sys_delay_release(priv->delay);
+        priv->delay = NULL;
+    }
+
+    if (!priv->up && (sys_bits_count64(priv->xl_up) >= priv->fragments))
+    {
+        priv->up = true;
+        logI("Going UP");
+        default_notify(xl, GF_EVENT_CHILD_UP, NULL);
+    }
+
+    sys_mutex_unlock(&priv->lock);
+}
+
 void dfc_notify(dfc_t * dfc, xlator_t * xl, int32_t event)
 {
     ida_private_t * priv;
+    uintptr_t * delay;
     int32_t i;
 
     priv = dfc->xl->private;
+
+    sys_mutex_lock(&priv->lock);
 
     switch (event)
     {
@@ -253,11 +282,16 @@ void dfc_notify(dfc_t * dfc, xlator_t * xl, int32_t event)
                 }
             }
 
-            // TODO: should be priv->fragments
-            if (dfc->active == priv->nodes)
+            i = sys_bits_count64(priv->xl_up);
+            if (i == priv->fragments)
             {
-                logI("Going UP");
-                default_notify(dfc->xl, GF_EVENT_CHILD_UP, NULL);
+                priv->delay = SYS_DELAY(1000, ida_up, (dfc->xl), 1);
+            }
+            else if ((i == priv->nodes) && (priv->delay != NULL))
+            {
+                delay = priv->delay;
+                priv->delay = NULL;
+                sys_delay_execute(delay, 0);
             }
 
             break;
@@ -273,15 +307,26 @@ void dfc_notify(dfc_t * dfc, xlator_t * xl, int32_t event)
                 }
             }
 
-            // TODO: should be priv->fragments
-            if (dfc->active == priv->nodes - 1)
+            if (sys_bits_count64(priv->xl_up) == priv->fragments - 1)
             {
-                logI("Going DOWN");
-                default_notify(dfc->xl, GF_EVENT_CHILD_DOWN, NULL);
+                delay = priv->delay;
+                if (delay != NULL)
+                {
+                    priv->delay = NULL;
+                    sys_delay_cancel(delay, false);
+                }
+                if (priv->up)
+                {
+                    priv->up = false;
+                    logI("Going DOWN");
+                    default_notify(dfc->xl, GF_EVENT_CHILD_DOWN, NULL);
+                }
             }
 
             break;
     }
+
+    sys_mutex_unlock(&priv->lock);
 }
 
 int32_t init(xlator_t * this)
@@ -299,7 +344,7 @@ int32_t init(xlator_t * this)
         RETVAL(-1)
     );
 
-    LOCK_INIT(&priv->lock);
+    sys_mutex_initialize(&priv->lock);
 
     priv->xl = this;
 
