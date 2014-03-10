@@ -409,7 +409,11 @@ void fini(xlator_t * this)
 #define IDA_FOP_COUNT_ALL 2
 #define IDA_FOP_COUNT_MOD 2
 
-#define IDA_FOP(_fop, _num, _dfc) \
+#define IDA_FOP_REQUIRE_ONE 1
+#define IDA_FOP_REQUIRE_MIN 2
+#define IDA_FOP_REQUIRE_ALL 3
+
+#define IDA_FOP(_fop, _num, _req, _dfc) \
     static ida_answer_t * __ida_copy_##_fop( \
                   SYS_ARGS_DECL((SYS_GF_ARGS_CBK, SYS_GF_ARGS_##_fop##_cbk))) \
     { \
@@ -464,13 +468,17 @@ void fini(xlator_t * this)
         req->xdata = &args->xdata; \
         sys_lock_initialize(&req->lock); \
         INIT_LIST_HEAD(&req->answers); \
-        if (IDA_FOP_COUNT_##_num == IDA_FOP_COUNT_INC) \
+        if (IDA_FOP_REQUIRE_##_req == IDA_FOP_REQUIRE_ONE) \
         { \
             req->required = 1; \
         } \
-        else \
+        else if (IDA_FOP_REQUIRE_##_req == IDA_FOP_REQUIRE_MIN) \
         { \
             req->required = ida->fragments; \
+        } \
+        else \
+        { \
+            req->required = ida->nodes; \
         } \
         req->pending = 0; \
         if (ida_prepare_##_fop(ida, req)) \
@@ -490,47 +498,55 @@ void fini(xlator_t * this)
         return 0; \
     }
 
-IDA_FOP(access,       INC, DIO)
-IDA_FOP(create,       ALL, DFC)
-IDA_FOP(entrylk,      ALL, DFC)
-IDA_FOP(fentrylk,     ALL, DFC)
-IDA_FOP(flush,        ALL, DIO)
-IDA_FOP(fsync,        ALL, DFC)
-IDA_FOP(fsyncdir,     ALL, DIO)
-IDA_FOP(getxattr,     INC, DIO)
-IDA_FOP(fgetxattr,    INC, DIO)
-IDA_FOP(inodelk,      ALL, DFC)
-IDA_FOP(finodelk,     ALL, DFC)
-IDA_FOP(link,         ALL, DFC)
-IDA_FOP(lk,           ALL, DFC)
-IDA_FOP(lookup,       ALL, DFC)
-IDA_FOP(mkdir,        ALL, DFC)
-IDA_FOP(mknod,        ALL, DFC)
-IDA_FOP(open,         ALL, DFC)
-IDA_FOP(opendir,      ALL, DFC)
-IDA_FOP(rchecksum,    MIN, DFC)
-IDA_FOP(readdir,      INC, DIO)
-IDA_FOP(readdirp,     INC, DIO)
-IDA_FOP(readlink,     INC, DIO)
-IDA_FOP(readv,        MIN, DFC)
-IDA_FOP(removexattr,  ALL, DFC)
-IDA_FOP(fremovexattr, ALL, DFC)
-IDA_FOP(rename,       ALL, DFC)
-IDA_FOP(rmdir,        ALL, DFC)
-IDA_FOP(setattr,      ALL, DFC)
-IDA_FOP(fsetattr,     ALL, DFC)
-IDA_FOP(setxattr,     ALL, DFC)
-IDA_FOP(fsetxattr,    ALL, DFC)
-IDA_FOP(stat,         INC, DIO)
-IDA_FOP(fstat,        INC, DIO)
-IDA_FOP(statfs,       ALL, DIO)
-IDA_FOP(symlink,      ALL, DFC)
-IDA_FOP(truncate,     ALL, DFC)
-IDA_FOP(ftruncate,    ALL, DFC)
-IDA_FOP(unlink,       ALL, DFC)
-IDA_FOP(writev,       MOD, DFC)
-IDA_FOP(xattrop,      ALL, DFC)
-IDA_FOP(fxattrop,     ALL, DFC)
+// Some fops need to wait for *all* answers because further operations could
+// fail in server xlator. For example, a create request could be answered as
+// soon as the minimum number of subvolumes have answered, however a future
+// writev operation can fail because the server translator may not find the
+// inode (even though that the dfc will later sort the requests to avoid an
+// incorrect execution order)
+// TODO: Determine exactly which operations need to be fully completed before
+//       proceeding
+IDA_FOP(access,       INC, ONE, DIO)
+IDA_FOP(create,       ALL, ALL, DFC)
+IDA_FOP(entrylk,      ALL, MIN, DFC)
+IDA_FOP(fentrylk,     ALL, MIN, DFC)
+IDA_FOP(flush,        ALL, MIN, DIO)
+IDA_FOP(fsync,        ALL, MIN, DFC)
+IDA_FOP(fsyncdir,     ALL, MIN, DIO)
+IDA_FOP(getxattr,     INC, ONE, DIO)
+IDA_FOP(fgetxattr,    INC, ONE, DIO)
+IDA_FOP(inodelk,      ALL, MIN, DFC)
+IDA_FOP(finodelk,     ALL, MIN, DFC)
+IDA_FOP(link,         ALL, ALL, DFC)
+IDA_FOP(lk,           ALL, MIN, DFC)
+IDA_FOP(lookup,       ALL, ALL, DFC)
+IDA_FOP(mkdir,        ALL, ALL, DFC)
+IDA_FOP(mknod,        ALL, ALL, DFC)
+IDA_FOP(open,         ALL, ALL, DFC)
+IDA_FOP(opendir,      ALL, ALL, DFC)
+IDA_FOP(rchecksum,    MIN, MIN, DFC)
+IDA_FOP(readdir,      INC, ONE, DIO)
+IDA_FOP(readdirp,     INC, ONE, DIO)
+IDA_FOP(readlink,     INC, ONE, DIO)
+IDA_FOP(readv,        MIN, MIN, DFC)
+IDA_FOP(removexattr,  ALL, MIN, DFC)
+IDA_FOP(fremovexattr, ALL, MIN, DFC)
+IDA_FOP(rename,       ALL, ALL, DFC)
+IDA_FOP(rmdir,        ALL, ALL, DFC)
+IDA_FOP(setattr,      ALL, MIN, DFC)
+IDA_FOP(fsetattr,     ALL, MIN, DFC)
+IDA_FOP(setxattr,     ALL, MIN, DFC)
+IDA_FOP(fsetxattr,    ALL, MIN, DFC)
+IDA_FOP(stat,         INC, ONE, DIO)
+IDA_FOP(fstat,        INC, ONE, DIO)
+IDA_FOP(statfs,       ALL, ALL, DIO)
+IDA_FOP(symlink,      ALL, ALL, DFC)
+IDA_FOP(truncate,     ALL, MIN, DFC)
+IDA_FOP(ftruncate,    ALL, MIN, DFC)
+IDA_FOP(unlink,       ALL, ALL, DFC)
+IDA_FOP(writev,       MOD, MIN, DFC)
+IDA_FOP(xattrop,      ALL, MIN, DFC)
+IDA_FOP(fxattrop,     ALL, MIN, DFC)
 
 int32_t ida_forget(xlator_t * this, inode_t * inode)
 {
