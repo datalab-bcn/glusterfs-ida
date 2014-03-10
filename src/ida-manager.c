@@ -34,6 +34,8 @@ void ida_complete(ida_request_t * req)
     dfc_complete(req->txn);
     if (atomic_dec(&req->pending, memory_order_seq_cst) == 1)
     {
+        STACK_DESTROY(req->rframe->root);
+
         list_for_each_entry_safe(ans, tmp, &req->answers, list)
         {
             list_del_init(&ans->list);
@@ -73,7 +75,7 @@ SYS_LOCK_CREATE(__ida_dispatch_cbk, ((uintptr_t *, io),
                                      (uint32_t, id)))
 {
     SYS_GF_CBK_CALL_TYPE(access) * args;
-    ida_answer_t * ans, * tmp;
+    ida_answer_t * ans, * tmp, * final;
     struct list_head * item;
     int32_t needed, ret;
 
@@ -82,6 +84,7 @@ SYS_LOCK_CREATE(__ida_dispatch_cbk, ((uintptr_t *, io),
         if (req->handlers->combine(req, id, ans, io))
         {
             ans->count++;
+            ans->mask |= 1ULL << id;
 
             item = ans->list.prev;
             while (item != &req->answers)
@@ -106,36 +109,51 @@ SYS_LOCK_CREATE(__ida_dispatch_cbk, ((uintptr_t *, io),
 
     ans = req->handlers->copy(io);
     ans->count = 1;
+    ans->mask = 1ULL << id;
     ans->id = id;
     ans->next = NULL;
     list_add_tail(&ans->list, &req->answers);
 
 merged:
+    final = NULL;
     if (ans->count == req->required)
     {
-        args = (SYS_GF_CBK_CALL_TYPE(access) *)((uintptr_t *)ans +
-                                                IDA_ANS_SIZE);
-        ret = req->handlers->rebuild(ida, req, ans);
-        if (ret >= 0)
-        {
-            ida_unwind(req, 0, (uintptr_t *)ans + IDA_ANS_SIZE);
-        }
-        else
-        {
-            logE("IDA: rebuild failed");
-            args->op_ret = ret;
-            ida_unwind(req, EIO, (uintptr_t *)ans + IDA_ANS_SIZE);
-        }
+        final = req->handlers->copy((uintptr_t *)ans + IDA_ANS_SIZE);
+        final->count = ans->count;
+        final->mask = ans->mask;
+        final->id = ans->id;
+        final->next = ans->next;
     }
 
     tmp = list_entry(req->answers.next, ida_answer_t, list);
     needed = req->required - tmp->count - req->pending + 1;
+    if (needed > 0)
+    {
+        req->failed |= req->last_sent & ~ tmp->mask;
+    }
 
     SYS_UNLOCK(&req->lock);
 
     if (needed > 0)
     {
         req->handlers->dispatch(ida, req);
+    }
+    else if (final != NULL)
+    {
+        args = (SYS_GF_CBK_CALL_TYPE(access) *)((uintptr_t *)final +
+                                                IDA_ANS_SIZE);
+        ret = req->handlers->rebuild(ida, req, final);
+        if (ret >= 0)
+        {
+            ida_unwind(req, 0, (uintptr_t *)final + IDA_ANS_SIZE);
+        }
+        else
+        {
+            logE("IDA: rebuild failed");
+            args->op_ret = ret;
+            ida_unwind(req, EIO, (uintptr_t *)final + IDA_ANS_SIZE);
+        }
+        sys_gf_args_free((uintptr_t *)final);
     }
 
     ida_complete(req);
@@ -160,16 +178,66 @@ SYS_CBK_CREATE(ida_dispatch_cbk, io, ((ida_private_t *, ida),
     }
 }
 
+int32_t ida_get_childs(ida_private_t * ida, int32_t count, uintptr_t * mask)
+{
+    int32_t first, idx, num;
+    uintptr_t map1, map2;
+
+    // This is not thread-safe, but its only purpose is to balance requests.
+    // If we lose some increments, it's not a problem.
+    idx = first = ida->index;
+    if (++first >= ida->nodes)
+    {
+        first = 0;
+    }
+    ida->index = first;
+    map2 = *mask;
+    map1 = map2 & ((1ULL << idx) - 1ULL);
+    num = sys_bits_count64(map1);
+    if (count <= num)
+    {
+        map2 = 0;
+        while (count < num)
+        {
+            map1 ^= sys_bits_first_one_mask64(map1);
+            num--;
+        }
+    }
+    else
+    {
+        map2 &= ~((1ULL << idx) - 1ULL);
+        num += sys_bits_count64(map2);
+        while (count < num)
+        {
+            map2 ^= sys_bits_first_one_mask64(map2);
+            num--;
+        }
+    }
+    *mask = map1 | map2;
+
+    return num;
+}
+
 void ida_dispatch_incremental(ida_private_t * ida, ida_request_t * req)
 {
     uintptr_t mask;
-    uint32_t idx;
+    int32_t idx;
 
     mask = ida->xl_up & ~req->sent;
-    if (mask != 0)
+    if (ida_get_childs(ida, 1, &mask) > 0)
     {
+        if (req->dfc != 0)
+        {
+            SYS_CALL(
+                dfc_begin, (ida->dfc, mask, NULL, *req->xdata, &req->txn),
+                E(),
+                GOTO(failed)
+            );
+        }
+
+        req->last_sent = mask;
+        req->sent |= mask;
         idx = sys_bits_first_one_index64(mask);
-        req->sent |= 1ULL << idx;
         SYS_CALL(
             dfc_attach, (req->txn, idx, req->xdata),
             E(),
@@ -177,7 +245,7 @@ void ida_dispatch_incremental(ida_private_t * ida, ida_request_t * req)
         );
 
         atomic_inc(&req->pending, memory_order_seq_cst);
-        sys_gf_wind(req->frame, NULL, ida->xl_list[idx],
+        sys_gf_wind(req->rframe, NULL, ida->xl_list[idx],
                     SYS_CBK(ida_dispatch_cbk, (ida, req, idx)),
                     NULL, (uintptr_t *)req, (uintptr_t *)req + IDA_REQ_SIZE);
 
@@ -185,7 +253,6 @@ void ida_dispatch_incremental(ida_private_t * ida, ida_request_t * req)
     }
 
 failed:
-
     logE("IDA: incremental dispatch failed");
     ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
 }
@@ -203,11 +270,19 @@ void ida_dispatch_all(ida_private_t * ida, ida_request_t * req)
     );
 
     mask = ida->xl_up;
-    count = sys_bits_count64(mask);
+    count = ida_get_childs(ida, ida->nodes, &mask);
     if (count >= ida->fragments)
     {
+        if (req->dfc != 0)
+        {
+            SYS_CALL(
+                dfc_begin, (ida->dfc, mask, NULL, *req->xdata, &req->txn),
+                E(),
+                GOTO(failed)
+            );
+        }
         atomic_add(&req->pending, count, memory_order_seq_cst);
-        req->sent = mask;
+        req->last_sent = req->sent = mask;
         do
         {
             idx = sys_bits_first_one_index64(mask);
@@ -218,7 +293,7 @@ void ida_dispatch_all(ida_private_t * ida, ida_request_t * req)
                 CONTINUE()
             );
             count--;
-            sys_gf_wind(req->frame, NULL, ida->xl_list[idx],
+            sys_gf_wind(req->rframe, NULL, ida->xl_list[idx],
                         SYS_CBK(ida_dispatch_cbk, (ida, req, idx)),
                         NULL, (uintptr_t *)req,
                         (uintptr_t *)req + IDA_REQ_SIZE);
@@ -243,47 +318,58 @@ void ida_dispatch_minimum(ida_private_t * ida, ida_request_t * req)
     uintptr_t mask;
     int32_t idx, i, count;
 
-    // TODO: if request is DFC managed, we have to fully restart it.
-    if (req->sent != 0)
+    if ((req->sent != 0) && (req->dfc != 0))
     {
         ida_dispatch_incremental(ida, req);
+
+        return;
+    }
+
+    mask = ida->xl_up & ~req->failed;
+    count = ida_get_childs(ida, ida->fragments, &mask);
+    if (count == ida->fragments)
+    {
+        if (req->dfc != 0)
+        {
+            SYS_CALL(
+                dfc_begin, (ida->dfc, mask, NULL, *req->xdata, &req->txn),
+                E(),
+                GOTO(failed)
+            );
+        }
+        atomic_add(&req->pending, count, memory_order_seq_cst);
+        req->last_sent = mask;
+        req->sent |= mask;
+        i = 0;
+        do
+        {
+            idx = sys_bits_first_one_index64(mask);
+            mask ^= 1ULL << idx;
+            SYS_CALL(
+                dfc_attach, (req->txn, idx, req->xdata),
+                E(),
+                CONTINUE()
+            );
+            sys_gf_wind(req->rframe, NULL, ida->xl_list[idx],
+                        SYS_CBK(ida_dispatch_cbk, (ida, req, idx)),
+                        NULL, (uintptr_t *)req,
+                        (uintptr_t *)req + IDA_REQ_SIZE);
+            i++;
+        } while ((i < count) && (mask != 0));
+        if (i < count)
+        {
+            dfc_failed(req->txn, count - i);
+        }
     }
     else
     {
-        mask = ida->xl_up;
-        count = ida->fragments;
-        if (sys_bits_count64(mask) >= count)
-        {
-            atomic_add(&req->pending, count, memory_order_seq_cst);
-            i = 0;
-            do
-            {
-                idx = sys_bits_first_one_index64(mask);
-                req->sent |= 1ULL << idx;
-                mask ^= 1ULL << idx;
-                SYS_CALL(
-                    dfc_attach, (req->txn, idx, req->xdata),
-                    E(),
-                    CONTINUE()
-                );
-                sys_gf_wind(req->frame, NULL, ida->xl_list[idx],
-                            SYS_CBK(ida_dispatch_cbk, (ida, req, idx)),
-                            NULL, (uintptr_t *)req,
-                            (uintptr_t *)req + IDA_REQ_SIZE);
-                i++;
-            } while ((i < count) && (mask != 0));
-            if (i < count)
-            {
-                dfc_failed(req->txn, count - i);
-            }
-        }
-        else
-        {
-            dfc_failed(req->txn, count);
-            logE("IDA: dispatch to minimum failed");
-            ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
-        }
+        ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
     }
+
+    return;
+
+failed:
+    ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
 }
 
 SYS_CBK_CREATE(ida_dispatch_write_cbk, io, ((ida_private_t *, ida),
@@ -307,14 +393,13 @@ SYS_CBK_CREATE(ida_dispatch_write_cbk, io, ((ida_private_t *, ida),
 
 void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
                           uint8_t * buffer, off_t offset, size_t size,
-                          size_t head, size_t tail)
+                          size_t head, size_t tail, uintptr_t mask)
 {
     SYS_GF_FOP_CALL_TYPE(writev) * args;
     struct iobref * iobref;
     struct iobuf * iobuf;
     uint8_t * ptr;
     ssize_t remaining, slice, pagesize, maxsize;
-    uintptr_t mask;
     int32_t idx, i, j, count;
 
     if (atomic_dec(&req->data, memory_order_seq_cst) != 1)
@@ -322,19 +407,11 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
         return;
     }
 
-    mask = ida->xl_up;
     count = sys_bits_count64(mask);
     i = 0;
 
     SYS_TEST(
         req->flags == 0,
-        EIO,
-        E(),
-        GOTO(failed)
-    );
-
-    SYS_TEST(
-        sys_bits_count64(mask) >= ida->fragments,
         EIO,
         E(),
         GOTO(failed)
@@ -353,7 +430,7 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
     req->size = head + tail;
 
     atomic_add(&req->pending, count, memory_order_seq_cst);
-    req->sent = mask;
+    req->last_sent = req->sent = mask;
     pagesize = iobpool_default_pagesize(
                                 (struct iobuf_pool *)ida->xl->ctx->iobuf_pool);
     maxsize = pagesize * ida->fragments;
@@ -410,7 +487,7 @@ void __ida_dispatch_write(ida_private_t * ida, ida_request_t * req,
             E(),
             GOTO(failed_iobuf)
         );
-        SYS_IO(sys_gf_writev_wind, (req->frame, NULL, ida->xl_list[idx],
+        SYS_IO(sys_gf_writev_wind, (req->rframe, NULL, ida->xl_list[idx],
                                     args->fd, vector, j,
                                     offset / ida->fragments, args->flags,
                                     iobref, *req->xdata),
@@ -448,7 +525,8 @@ SYS_CBK_CREATE(ida_dispatch_write_readv_cbk, io, ((ida_private_t *, ida),
                                                   (off_t, offset),
                                                   (size_t, size),
                                                   (size_t, head),
-                                                  (size_t, tail)))
+                                                  (size_t, tail),
+                                                  (uintptr_t, mask)))
 {
     SYS_GF_WIND_CBK_TYPE(readv) * args;
 
@@ -467,7 +545,7 @@ SYS_CBK_CREATE(ida_dispatch_write_readv_cbk, io, ((ida_private_t *, ida),
         memcpy(ptr, args->vector.iovec[0].iov_base, ida->block_size);
     }
 
-    __ida_dispatch_write(ida, req, buffer, offset, size, head, tail);
+    __ida_dispatch_write(ida, req, buffer, offset, size, head, tail, mask);
 }
 
 void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
@@ -478,11 +556,21 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
     off_t user_offs, offs;
     size_t user_size, size, head, tail, tmp;
     uintptr_t mask;
+    int32_t count;
 
     SYS_TEST(
         req->sent == 0,
         EIO,
         D(),
+        GOTO(failed)
+    );
+
+    mask = ida->xl_up;
+    count = ida_get_childs(ida, ida->nodes, &mask);
+    SYS_TEST(
+        count >= ida->fragments,
+        ENODATA,
+        E(),
         GOTO(failed)
     );
 
@@ -506,7 +594,6 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
         GOTO(failed)
     );
 
-    mask = ida->xl_up;
     SYS_CALL(
         dfc_begin, (ida->dfc, mask, args->fd->inode, *req->xdata, &req->txn),
         E(),
@@ -521,11 +608,11 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
             E(),
             GOTO(failed_buffer)
         );
-        SYS_IO(sys_gf_readv_wind, (req->frame, NULL, ida->xl, args->fd,
+        SYS_IO(sys_gf_readv_wind, (req->rframe, NULL, ida->xl, args->fd,
                                    ida->block_size, offs, 0, xdata),
                SYS_CBK(ida_dispatch_write_readv_cbk, (ida, req, buffer,
                                                       buffer, offs, size,
-                                                      head, tail)
+                                                      head, tail, mask)
                       ));
         sys_dict_release(xdata);
     }
@@ -538,18 +625,18 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
             E(),
             GOTO(failed_buffer)
         );
-        SYS_IO(sys_gf_readv_wind, (req->frame, NULL, ida->xl, args->fd,
+        SYS_IO(sys_gf_readv_wind, (req->rframe, NULL, ida->xl, args->fd,
                                    ida->block_size,
                                    offs + size - ida->block_size, 0, xdata),
                SYS_CBK(ida_dispatch_write_readv_cbk, (ida, req, buffer,
                                                       buffer + size -
                                                       ida->block_size, offs,
-                                                      size, head, tail)
+                                                      size, head, tail, mask)
                       ));
         sys_dict_release(xdata);
     }
 
-    __ida_dispatch_write(ida, req, buffer, offs, size, head, tail);
+    __ida_dispatch_write(ida, req, buffer, offs, size, head, tail, mask);
 
     return;
 

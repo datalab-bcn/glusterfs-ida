@@ -45,6 +45,7 @@ typedef struct
     xlator_t ** xl_list;
     dfc_t *     dfc;
     uintptr_t * delay;
+    int32_t     index;
     bool        up;
 } ida_private_t;
 
@@ -148,6 +149,7 @@ struct _ida_handlers
 struct _ida_request
 {
     call_frame_t *      frame;
+    call_frame_t *      rframe;
     xlator_t *          xl;
     ida_handlers_t *    handlers;
     dfc_transaction_t * txn;
@@ -157,10 +159,13 @@ struct _ida_request
     uintptr_t           flags;
     uintptr_t           data;
     uintptr_t           sent;
+    uintptr_t           last_sent;
+    uintptr_t           failed;
     dict_t **           xdata;
     sys_lock_t          lock;
     struct list_head    answers;
     int32_t             completed;
+    int32_t             dfc;
 };
 
 struct _ida_answer
@@ -168,6 +173,7 @@ struct _ida_answer
     struct list_head list;
     uint32_t         count;
     int32_t          id;
+    uintptr_t        mask;
     ida_answer_t *   next;
 };
 

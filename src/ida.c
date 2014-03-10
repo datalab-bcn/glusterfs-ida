@@ -435,8 +435,7 @@ void fini(xlator_t * this)
         .rebuild  = SYS_GLUE(ida_rebuild_, _fop), \
         .copy     = SYS_GLUE(ida_copy_, _fop) \
     }; \
-    SYS_ASYNC_CREATE(__ida_##_fop, ((dfc_transaction_t *, txn), \
-                                    (call_frame_t *, frame), \
+    SYS_ASYNC_CREATE(__ida_##_fop, ((call_frame_t *, frame), \
                                     (xlator_t *, this), \
                                     SYS_GF_ARGS_##_fop)) \
     { \
@@ -448,59 +447,46 @@ void fini(xlator_t * this)
         args = (SYS_GF_FOP_CALL_TYPE(_fop) *)((uintptr_t *)req + \
                                               IDA_REQ_SIZE); \
         req->frame = frame; \
+        SYS_PTR( \
+            &req->rframe, copy_frame, (frame), \
+            ENOMEM, \
+            E(), \
+            GOTO(failed) \
+        ); \
         req->xl = this; \
         req->handlers = &ida_handlers_##_fop; \
-        req->txn = txn; \
+        req->dfc = IDA_FOP_MODE_##_num##_##_dfc; \
+        req->txn = NULL; \
+        req->last_sent = 0; \
         req->sent = 0; \
+        req->failed = 0; \
         req->completed = 0; \
         req->xdata = &args->xdata; \
         sys_lock_initialize(&req->lock); \
         INIT_LIST_HEAD(&req->answers); \
-        switch (IDA_FOP_COUNT_##_num) \
+        if (IDA_FOP_COUNT_##_num == IDA_FOP_COUNT_INC) \
         { \
-            case IDA_FOP_COUNT_INC: req->required = 1; break; \
-            case IDA_FOP_COUNT_MIN: req->required = ida->fragments; break; \
-            case IDA_FOP_COUNT_ALL: req->required = ida->nodes; break; \
+            req->required = 1; \
+        } \
+        else \
+        { \
+            req->required = ida->fragments; \
         } \
         req->pending = 0; \
         if (ida_prepare_##_fop(ida, req)) \
         { \
             ida_handlers_##_fop.dispatch(ida, req); \
+            return; \
         } \
-        else \
-        { \
-            sys_gf_##_fop##_unwind_error(frame, EIO, NULL); \
-            sys_gf_args_free((uintptr_t *)req); \
-        } \
+    failed: \
+        sys_gf_##_fop##_unwind_error(frame, EIO, NULL); \
+        sys_gf_args_free((uintptr_t *)req); \
     } \
     int32_t ida_##_fop(call_frame_t * frame, xlator_t * xl, \
                        SYS_ARGS_DECL((SYS_GF_ARGS_##_fop))) \
     { \
-        dfc_transaction_t * txn = NULL; \
-        int32_t num; \
-        ida_private_t * ida = xl->private; \
-        if (IDA_FOP_MODE_##_num##_##_dfc != 0) \
-        { \
-            switch (IDA_FOP_COUNT_##_num) \
-            { \
-                case IDA_FOP_COUNT_INC: num = 1; break; \
-                case IDA_FOP_COUNT_MIN: num = ida->fragments; break; \
-                case IDA_FOP_COUNT_ALL: num = ida->nodes; break; \
-            } \
-            SYS_CALL( \
-                dfc_begin, (ida->dfc, (1ULL << num) - 1ULL, NULL, xdata, \
-                            &txn), \
-                E(), \
-                GOTO(failed) \
-            ); \
-        } \
-        SYS_ASYNC(__ida_##_fop, (txn, frame, xl, \
+        SYS_ASYNC(__ida_##_fop, (frame, xl, \
                                  SYS_ARGS_NAMES((SYS_GF_ARGS_##_fop)))); \
-        return 0; \
-    failed: \
-        logE("IDA: init failed"); \
-        sys_gf_##_fop##_unwind_error(frame, EIO, NULL); \
-        sys_dict_release(xdata); \
         return 0; \
     }
 
