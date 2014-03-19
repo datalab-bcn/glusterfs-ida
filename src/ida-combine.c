@@ -453,7 +453,13 @@ bool ida_prepare_lookup(ida_private_t * ida, ida_request_t * req)
     size_t size, tmp;
 
     args = (SYS_GF_FOP_CALL_TYPE(lookup) *)((uintptr_t *)req + IDA_REQ_SIZE);
-    if (sys_dict_del(&args->xdata, GF_CONTENT_KEY, &data) == 0)
+    SYS_CALL(
+        sys_dict_del, (&args->xdata, GF_CONTENT_KEY, &data),
+        E(),
+        RETVAL(true)
+    );
+
+    if (data != NULL)
     {
         size = data_to_uint64(data);
         data_unref(data);
