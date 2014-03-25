@@ -952,7 +952,8 @@ bool ida_combine_readlink(ida_request_t * req, uint32_t idx,
 
     if (dst->op_ret >= 0)
     {
-        if ((strcmp(dst->path, src->path) != 0) ||
+        if ((dst->op_ret != src->op_ret) ||
+            (memcmp(dst->path, src->path, dst->op_ret) != 0) ||
             !ida_iatt_combine(&buf, &dst->buf, &src->buf))
         {
             return false;
