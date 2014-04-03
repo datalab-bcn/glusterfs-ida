@@ -29,19 +29,23 @@ typedef struct _ida_args_cbk ida_args_cbk_t;
 
 typedef struct _ida_heal
 {
-    uuid_t gfid;
-    loc_t loc;
     int32_t refs;
-    int32_t error;
-    int32_t healing;
-    mode_t mode;
-    inode_t * inode;
-    fd_t * src;
-    fd_t * dst;
-    uint64_t offset;
-    uint32_t size;
-    uintptr_t src_mask;
-    uintptr_t dst_mask;
+    int32_t flags;
+    xlator_t * xl;
+    call_frame_t * frame;
+    dfc_transaction_t * txn;
+    dict_t * xdata;
+    uintptr_t mask;
+    uintptr_t available;
+    uintptr_t good;
+    uintptr_t bad;
+    uintptr_t open;
+    struct iatt iatt;
+    off_t offset;
+    loc_t loc;
+    char * symlink;
+    fd_t * fd_src;
+    fd_t * fd_dst;
 } ida_heal_t;
 
 typedef struct
@@ -80,8 +84,17 @@ typedef struct
 typedef struct
 {
     uint64_t size;
+    uintptr_t healthy;
     ida_heal_t heal;
 } ida_inode_ctx_t;
+
+typedef struct
+{
+    uintptr_t mask;
+    uintptr_t data;
+    uint32_t  flags;
+    loc_t     loc;
+} ida_fd_ctx_t;
 
 typedef void (* ida_manager_wipe_f)(ida_local_t * local);
 typedef int32_t (* ida_manager_dispatch_f)(ida_local_t * local, xlator_t * child, call_frame_t * frame, int32_t index, ida_args_t * args);

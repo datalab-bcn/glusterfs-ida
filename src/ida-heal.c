@@ -21,404 +21,1254 @@
 #include "gfsys.h"
 
 #include "ida-common.h"
+#include "ida-mem-types.h"
 #include "ida-type-dict.h"
 #include "ida-type-loc.h"
 #include "ida-gf.h"
+#include "ida-manager.h"
+#include "ida-combine.h"
 #include "ida-heal.h"
 #include "ida.h"
 
-void ida_heal_free(ida_inode_ctx_t * ctx)
-{
-    if (ctx->heal.src != NULL)
-    {
-        fd_unref(ctx->heal.src);
-        ctx->heal.src = NULL;
-    }
-    if (ctx->heal.dst != NULL)
-    {
-        fd_unref(ctx->heal.dst);
-        ctx->heal.dst = NULL;
-    }
-    if (ctx->heal.inode != NULL)
-    {
-        inode_unref(ctx->heal.inode);
-    }
-    ida_loc_unassign(&ctx->heal.loc);
+#define IDA_HEAL_FLAG_RETRY     1
+#define IDA_HEAL_FLAG_DATA      2
 
-    ctx->heal.healing = 0;
+#define IDA_HEAL_FOP(_name, _fop, _dispatcher, _req_handler, _ans_handler, \
+                     _end_handler) \
+    void _name##_completed(call_frame_t * frame, err_t error, \
+                           ida_request_t * req, uintptr_t * data) \
+    { \
+        ida_answer_t * ans; \
+        SYS_GF_CBK_CALL_TYPE(_fop) * args; \
+        int32_t idx; \
+        char buff[64]; \
+        ida_heal_t * heal = frame->local; \
+        logI("HEAL: " #_fop ": completed (refs=%d)", heal->refs); \
+        if (!_req_handler(heal, req, data, error)) \
+        { \
+            ida_heal_release(heal); \
+            return; \
+        } \
+        idx = 0; \
+        list_for_each_entry(ans, &req->answers, list) \
+        { \
+            args = (SYS_GF_CBK_CALL_TYPE(_fop) *)((uintptr_t *)ans + \
+                                                  IDA_ANS_SIZE); \
+            logW("HEAL: " #_fop ": answer %u: %d(%d) %s", idx, \
+                 args->op_ret, args->op_errno, to_bin(buff, sizeof(buff), \
+                 ans->mask, 3)); \
+            _ans_handler(heal, args->op_ret, args->op_errno, ans->mask, \
+                         args); \
+            idx++; \
+        } \
+        _end_handler(heal); \
+        ida_heal_release(heal); \
+    } \
+    static ida_handlers_t _name##_handlers = \
+    { \
+        .prepare   = ida_prepare_##_fop, \
+        .dispatch  = _dispatcher, \
+        .completed = _name##_completed, \
+        .combine   = ida_combine_##_fop, \
+        .rebuild   = ida_rebuild_##_fop, \
+        .copy      = ida_copy_##_fop \
+    }; \
+    void _name(ida_heal_t * heal, uintptr_t mask, dfc_transaction_t * txn, \
+               int32_t minimum, SYS_ARGS_DECL((SYS_GF_ARGS_##_fop))) \
+    { \
+        char buff[64]; \
+        ida_heal_acquire(heal); \
+        logI("HEAL: " #_fop ": starting %s (refs=%d)", \
+             to_bin(buff, sizeof(buff), mask, 3), heal->refs); \
+        SYS_ASYNC( \
+            ida_##_fop, (heal->frame, heal->xl, &_name##_handlers, txn, \
+                         ~mask, minimum, sys_bits_count64(mask), NULL, NULL, \
+                         NULL, SYS_ARGS_NAMES((SYS_GF_ARGS_##_fop))) \
+        ); \
+    }
+
+char * to_bin(char * buffer, int32_t size, uintptr_t num, int32_t digits)
+{
+    if (size < 1)
+    {
+        return NULL;
+    }
+
+    buffer += size - 1;
+    *buffer = 0;
+
+    do
+    {
+        if (--size <= 0)
+        {
+            return NULL;
+        }
+
+        *--buffer = '0' + (num & 1);
+        digits--;
+        num >>= 1;
+    } while (num != 0);
+    while (digits > 0)
+    {
+        if (--size <= 0)
+        {
+            return NULL;
+        }
+        *--buffer = '0';
+        digits--;
+    }
+
+    return buffer;
 }
 
-void ida_heal_unref(ida_inode_ctx_t * ctx)
+void ida_heal_show_info(ida_private_t * ida, int32_t idx, ida_answer_t * ans,
+                        int32_t op_ret, int32_t op_errno, struct iatt * iatt)
 {
-    if (__sync_fetch_and_sub(&ctx->heal.refs, 1) == 1)
+    char txt1[65], txt2[128];
+
+    if ((iatt != NULL) && (op_ret >= 0))
     {
-        ida_heal_free(ctx);
-    }
-}
-
-void ida_heal_copy_write(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args);
-
-void ida_heal_copy_read(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
-{
-    ida_inode_ctx_t * ctx;
-
-    gf_log(local->xl->name, GF_LOG_DEBUG, "copy read local: %s", local->manager.name);
-
-    ctx = local->inode_ctx;
-    if ((error == 0) && (args->result > 0))
-    {
-        gf_log(local->xl->name, GF_LOG_DEBUG, "%u bytes written for healing", args->result);
-        ida_nest_readv(local, sys_bits_count64(ctx->heal.src_mask), ctx->heal.src_mask, ida_heal_copy_write, ctx->heal.src, ctx->heal.size, ctx->heal.offset, 0, NULL);
+        sprintf(txt2, "%s %u %08o %u:%u %u:%u %lu", uuid_utoa(iatt->ia_gfid),
+                iatt->ia_nlink, st_mode_from_ia(iatt->ia_prot, iatt->ia_type),
+                iatt->ia_uid, iatt->ia_gid, ia_major(iatt->ia_rdev),
+                ia_minor(iatt->ia_rdev), iatt->ia_size);
     }
     else
     {
-        ida_heal_free(ctx);
+        iatt = NULL;
     }
+    logI("  Healing: Group %u: %s (%2d), ret=%d (errno=%d) %s", idx,
+         to_bin(txt1, sizeof(txt1), ans->mask, ida->nodes), ans->count,
+         op_ret, op_errno, (iatt == NULL) ? "<not available>" : txt2);
 }
 
-void ida_heal_done(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
+void ida_heal_show_msg(ida_heal_t * heal, uintptr_t mask, err_t error,
+                       char * msg, ...)
 {
-    ida_inode_ctx_t * ctx;
+    ida_private_t * ida;
+    va_list args;
+    char * buff = NULL, txt[65];
 
-    gf_log(local->xl->name, GF_LOG_DEBUG, "done local: %s", local->manager.name);
-
-    ctx = local->inode_ctx;
-    if ((error == 0) && (args->result >= 0))
+    va_start(args, msg);
+    if ((vasprintf(&buff, msg, args) < 0) || (buff == NULL))
     {
-        gf_log(local->xl->name, GF_LOG_INFO, "Healing complete");
+        logE("Unable to format a text message");
+
+        buff = msg;
     }
+    va_end(args);
 
-    ida_heal_free(ctx);
-}
+    ida = heal->xl->private;
 
-void ida_heal_set_attr(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
-{
-    ida_inode_ctx_t * ctx;
-
-    gf_log(local->xl->name, GF_LOG_DEBUG, "setattr local: %s", local->manager.name);
-
-    ctx = local->inode_ctx;
-    if ((error == 0) && (args->result >= 0))
+    if (uuid_is_null(heal->loc.gfid))
     {
-        ida_nest_fsetattr(local, sys_bits_count64(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_done, ctx->heal.dst, &args->stat.attr, GF_SET_ATTR_MODE | GF_SET_ATTR_UID | GF_SET_ATTR_GID /*| GF_SET_ATTR_ATIME | GF_SET_ATTR_MTIME*/, NULL);
+        logW("GFID is NULL");
+    }
+    if (error != 0)
+    {
+        logI("Healing: %s[%s]: Error %d: %s", uuid_utoa(heal->loc.gfid),
+             to_bin(txt, sizeof(txt), mask, ida->nodes), error, buff);
     }
     else
     {
-        ida_heal_free(ctx);
+        logI("Healing: %s[%s]: %s", uuid_utoa(heal->loc.gfid),
+             to_bin(txt, sizeof(txt), mask, ida->nodes), buff);
+    }
+
+    if (buff != msg)
+    {
+        free(buff);
     }
 }
 
-void ida_heal_get_attr(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
+bool ida_default_request_handler(ida_heal_t * heal, ida_request_t * req,
+                                 uintptr_t * data, err_t error)
 {
-    ida_inode_ctx_t * ctx;
+    return true;
+}
 
-    gf_log(local->xl->name, GF_LOG_DEBUG, "getattr local: %s", local->manager.name);
+void ida_default_answer_handler(ida_heal_t * heal, int32_t op_ret,
+                                int32_t op_errno, uintptr_t mask, void * args)
+{
+}
 
-    ctx = local->inode_ctx;
-    if ((error == 0) && (args->result >= 0))
+void ida_default_end_handler(ida_heal_t * heal)
+{
+}
+
+void ida_heal_skip_bad(ida_heal_t * heal, int32_t op_ret, int32_t op_errno,
+                       uintptr_t mask, void * data)
+{
+    if (op_ret < 0)
     {
-        ida_nest_fstat(local, sys_bits_count64(ctx->heal.src_mask), ctx->heal.src_mask, ida_heal_set_attr, ctx->heal.src, NULL);
-    }
-    else
-    {
-        ida_heal_free(ctx);
+        ida_heal_show_msg(heal, mask, op_errno,
+                          "Unable to heal some fragments");
+
+        atomic_and(&heal->bad, ~mask, memory_order_seq_cst);
     }
 }
 
-void ida_heal_set_xattr(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
+ida_answer_t * ida_heal_check_basic(ida_heal_t * heal, ida_request_t * req,
+                                    err_t error, uintptr_t * mask)
 {
-    ida_inode_ctx_t * ctx;
+    ida_private_t * ida;
+    ida_answer_t * ans;
+    SYS_GF_CBK_CALL_TYPE(access) * args;
+    uintptr_t bad;
 
-    gf_log(local->xl->name, GF_LOG_DEBUG, "setxattr local: %s", local->manager.name);
+    SYS_TEST(
+        error == 0,
+        error,
+        E(),
+        LOG(E(), "Unable to get enough healthy information to heal the inode"),
+        RETVAL(NULL)
+    );
 
-    ctx = local->inode_ctx;
-    if ((error == 0) && (args->result >= 0))
+    bad = 0;
+    list_for_each_entry(ans, &req->answers, list)
     {
-        ida_nest_fsetxattr(local, sys_bits_count64(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_get_attr, ctx->heal.dst, args->getxattr.xattr, 0, NULL);
+        args = (SYS_GF_CBK_CALL_TYPE(access) *)((uintptr_t *)ans +
+                                                IDA_ANS_SIZE);
+        if (req->answers.next != &ans->list)
+        {
+            if ((args->op_ret >= 0) || (args->op_errno != ENOTCONN))
+            {
+                bad |= ans->mask;
+            }
+        }
     }
-    else
+
+    ida = heal->xl->private;
+    ans = list_entry(req->answers.next, ida_answer_t, list);
+    if (ans->count < ida->fragments)
     {
-        ida_heal_free(ctx);
+        ida_heal_show_msg(heal, ans->mask, ENODATA,
+                          "Insufficient quorum to heal a symlink");
+
+        return NULL;
     }
+
+    *mask = bad;
+
+    return ans;
 }
 
-void ida_heal_copy_write(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
+void ida_heal_cleanup(ida_heal_t * heal)
 {
-    ida_inode_ctx_t * ctx;
+    if (heal->xdata != NULL)
+    {
+        sys_dict_release(heal->xdata);
+        heal->xdata = NULL;
+    }
+    if (heal->symlink != NULL)
+    {
+        SYS_FREE(heal->symlink);
+        heal->symlink = NULL;
+    }
+    if (heal->fd_src != NULL)
+    {
+        fd_unref(heal->fd_src);
+        heal->fd_src = NULL;
+    }
+    if (heal->fd_dst != NULL)
+    {
+        fd_unref(heal->fd_dst);
+        heal->fd_dst = NULL;
+    }
+
+    heal->frame->local = NULL;
+    STACK_RESET(heal->frame->root);
+    heal->frame->local = heal;
+
+    heal->flags = 0;
+    heal->good = 0;
+    heal->bad = 0;
+    heal->open = 0;
+    heal->offset = 0;
+}
+
+void ida_heal_destroy(ida_heal_t * heal)
+{
+    SYS_CODE(
+        inode_ctx_del, (heal->loc.inode, heal->xl, NULL),
+        ENOENT,
+        W(),
+        LOG(W(), "Heal data not present on inode context")
+    );
+
+    ida_heal_cleanup(heal);
+    sys_loc_release(&heal->loc);
+
+    heal->frame->local = NULL;
+    STACK_DESTROY(heal->frame->root);
+
+    SYS_FREE(heal);
+}
+
+void ida_heal_acquire(ida_heal_t * heal)
+{
+    atomic_inc(&heal->refs, memory_order_seq_cst);
+}
+
+SYS_ASYNC_DECLARE(ida_heal_start, ((ida_heal_t *, heal)));
+
+bool ida_heal_check_restart(ida_heal_t * heal, ida_request_t * req,
+                            uintptr_t * data, err_t error)
+{
+    if (req->answers.next->next != &req->answers)
+    {
+        if ((heal->flags & IDA_HEAL_FLAG_RETRY) != 0)
+        {
+            ida_heal_start(heal);
+        }
+    }
+
+    return false;
+}
+
+void ida_heal_release(ida_heal_t * heal);
+
+IDA_HEAL_FOP(
+    ida_heal_lookup_end, lookup,
+    ida_dispatch_all,
+    ida_heal_check_restart,
+    ida_default_answer_handler,
+    ida_default_end_handler
+)
+
+void ida_heal_writev_handler(ida_heal_t * heal);
+
+IDA_HEAL_FOP(
+    ida_heal_writev, writev,
+    ida_dispatch_write,
+    ida_default_request_handler,
+    ida_heal_skip_bad,
+    ida_heal_writev_handler
+)
+
+void ida_heal_metadata_xattr_get(ida_heal_t * heal);
+
+bool ida_heal_readv_handler(ida_heal_t * heal, ida_request_t * req,
+                            uintptr_t * data, err_t error)
+{
+    ida_private_t * ida;
+    ida_answer_t * ans;
+    SYS_GF_CBK_CALL_TYPE(readv) * args;
+    uintptr_t good, bad, mask;
     off_t offset;
 
-    gf_log(local->xl->name, GF_LOG_DEBUG, "copy write local: %s", local->manager.name);
+    SYS_PTR(
+        &ans, ida_heal_check_basic, (heal, req, error, &bad),
+        ENODATA,
+        E(),
+        RETVAL(false)
+    );
 
-    ctx = local->inode_ctx;
-    if ((error == 0) && (args->result > 0))
+    if (bad != 0)
     {
-        gf_log(local->xl->name, GF_LOG_DEBUG, "%u bytes read for healing", args->result);
-        offset = ctx->heal.offset;
-        ctx->heal.offset += args->result;
-        ida_nest_writev_heal(local, sys_bits_count64(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_copy_read, ctx->heal.dst, args->readv.buffer.vectors, args->readv.buffer.count, offset, 0, args->readv.buffer.buffers, NULL);
+        atomic_and(&heal->good, ~bad, memory_order_seq_cst);
     }
-    else if ((error == 0) && (args->result == 0))
+
+    args = (SYS_GF_CBK_CALL_TYPE(readv) *)data;
+    if (args->op_ret < 0)
     {
-        ida_nest_fgetxattr(local, 1, ctx->heal.src_mask, ida_heal_set_xattr, ctx->heal.src, NULL, NULL);
+        ida_heal_show_msg(heal, ans->mask, args->op_errno,
+                          "Unable to read healthy data");
     }
-    else
+    else if (args->op_ret > 0)
     {
-        ida_heal_free(ctx);
-    }
-}
-
-void ida_heal_copy(ida_local_t * local)
-{
-    ida_inode_ctx_t * ctx;
-
-    gf_log(local->xl->name, GF_LOG_DEBUG, "copy local: %s", local->manager.name);
-
-    ctx = local->inode_ctx;
-    ctx->heal.offset = 0;
-    ida_nest_readv(local, sys_bits_count64(ctx->heal.src_mask), ctx->heal.src_mask, ida_heal_copy_write, ctx->heal.src, ctx->heal.size, ctx->heal.offset, 0, NULL);
-}
-
-void ida_heal_write(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
-{
-    ida_inode_ctx_t * ctx;
-
-    gf_log(local->xl->name, GF_LOG_DEBUG, "write local: %s", local->manager.name);
-
-    ctx = local->inode_ctx;
-    if ((error == 0) && (args->result >= 0))
-    {
-        gf_log(local->xl->name, GF_LOG_INFO, "Heal create succeeded");
+        offset = heal->offset;
+        heal->offset += 128 * 1024;
+        ida_heal_writev(heal, heal->bad, IDA_USE_DFC, 1, heal->fd_dst,
+                        args->vector.iovec, args->vector.count,
+                        offset, 0, args->iobref, NULL);
     }
     else
     {
-        __sync_val_compare_and_swap(&ctx->heal.error, 0, error ? error : args->code);
-        gf_log(local->xl->name, GF_LOG_ERROR, "Heal create failed (%d - %d, %d)", error, args->result, args->code);
+        good = heal->good;
+        bad = heal->bad;
+
+        ida = heal->xl->private;
+        ida_heal_cleanup(heal);
+        heal->mask = good | bad;
+        heal->good = good;
+        heal->bad = bad;
+
+        mask = heal->mask;
+        SYS_CALL(
+            dfc_begin, (ida->dfc, mask, heal->loc.inode, NULL,
+                        &heal->txn),
+            E(),
+            LOG(E(), "Unable to initiate a transaction for healing"),
+            GOTO(failed)
+        );
+
+        SYS_CALL(
+            dfc_attach, (heal->txn, 0, &heal->xdata),
+            E(),
+            GOTO(failed_dfc)
+        );
+
+        ida_heal_metadata_xattr_get(heal);
     }
-    if (__sync_fetch_and_sub(&ctx->heal.refs, 1) == 1)
+
+    return false;
+
+failed_dfc:
+    dfc_failed(heal->txn, sys_bits_count64(mask));
+failed:
+
+    return false;
+}
+
+IDA_HEAL_FOP(
+    ida_heal_readv, readv,
+    ida_dispatch_all,
+    ida_heal_readv_handler,
+    ida_default_answer_handler,
+    ida_default_end_handler
+)
+
+void ida_heal_writev_handler(ida_heal_t * heal)
+{
+    ida_private_t * ida;
+
+    if (heal->bad != 0)
     {
-        if (ctx->heal.error != 0)
+        ida = heal->xl->private;
+        ida_heal_readv(heal, heal->good, IDA_USE_DFC, ida->fragments,
+                       heal->fd_src, 128 * 1024, heal->offset, 0, NULL);
+    }
+}
+
+bool ida_heal_rebuild(ida_heal_t * heal);
+
+void ida_heal_release(ida_heal_t * heal)
+{
+    ida_private_t * ida;
+    uintptr_t mask, bad;
+    char buff[64];
+
+    if (atomic_dec(&heal->refs, memory_order_seq_cst) == 1)
+    {
+        heal->frame->local = NULL;
+        STACK_RESET(heal->frame->root);
+        heal->frame->local = heal;
+
+        mask = heal->mask;
+        bad = heal->bad;
+        if ((mask == 0) && (bad == 0))
         {
-            ida_heal_free(ctx);
+            logI("HEAL: finished");
+            ida_heal_destroy(heal);
         }
         else
         {
-            ida_heal_copy(local);
+            ida = heal->xl->private;
+            if ((heal->flags & IDA_HEAL_FLAG_DATA) != 0)
+            {
+                logI("HEAL: recovering data"); \
+                heal->flags &= ~IDA_HEAL_FLAG_DATA;
+                ida_heal_readv(heal, heal->good, IDA_USE_DFC, ida->fragments,
+                               heal->fd_src, 128 * 1024, heal->offset, 0,
+                               NULL);
+                mask = 0;
+            }
+            else if (bad != 0)
+            {
+                logI("HEAL: rebuild on %s",
+                     to_bin(buff, sizeof(buff), bad, ida->nodes));
+                mask &= ~(heal->good | bad);
+
+                heal->mask &= ~mask;
+
+                if (!ida_heal_rebuild(heal))
+                {
+                    logW("HEAL: rebuild failed");
+                    mask |= heal->mask;
+                    heal->mask = 0;
+                }
+            }
+            else
+            {
+                heal->mask &= ~mask;
+            }
+
+            if (mask != 0)
+            {
+                logI("HEAL: finishing transaction on %s",
+                     to_bin(buff, sizeof(buff), mask, ida->nodes));
+                ida_heal_lookup_end(heal, mask, heal->txn, ida->fragments,
+                                    &heal->loc, NULL);
+            }
         }
     }
 }
 
-void ida_heal_read(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
+IDA_HEAL_FOP(
+    ida_heal_unlink, unlink,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_heal_skip_bad,
+    ida_default_end_handler
+)
+
+IDA_HEAL_FOP(
+    ida_heal_rmdir, rmdir,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_heal_skip_bad,
+    ida_default_end_handler
+)
+
+IDA_HEAL_FOP(
+    ida_heal_truncate, truncate,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_heal_skip_bad,
+    ida_default_end_handler
+)
+
+void ida_heal_remove(ida_heal_t * heal, ida_request_t * req)
 {
-    ida_inode_ctx_t * ctx;
+    struct list_head * item;
+    ida_answer_t * ans;
+    SYS_GF_CBK_CALL_TYPE(lookup) * args;
 
-    gf_log(local->xl->name, GF_LOG_DEBUG, "read local: %s", local->manager.name);
+    item = req->answers.next;
+    do
+    {
+        item = item->next;
+        ans = list_entry(item, ida_answer_t, list);
+        args = (SYS_GF_CBK_CALL_TYPE(lookup) *)((uintptr_t *)ans +
+                                                IDA_ANS_SIZE);
 
-    ctx = local->inode_ctx;
-    if ((error == 0) && (args->result >= 0))
-    {
-        gf_log(local->xl->name, GF_LOG_DEBUG, "Heal open succeeded");
-    }
-    else
-    {
-        __sync_val_compare_and_swap(&ctx->heal.error, 0, error ? error : args->code);
-        gf_log(local->xl->name, GF_LOG_ERROR, "Heal open failed");
-    }
-    if (__sync_fetch_and_sub(&ctx->heal.refs, 1) == 1)
-    {
-        if (ctx->heal.error != 0)
+        ida_heal_show_msg(heal, ans->mask, 0, "Removing inode");
+
+        if (args->op_ret < 0)
         {
-            ida_heal_free(ctx);
+            if ((args->op_errno == ENOENT) || (args->op_errno == ENOTDIR))
+            {
+                ida_heal_show_msg(heal, ans->mask, 0, "Inode already removed");
+            }
+            else
+            {
+                ida_heal_show_msg(heal, ans->mask, args->op_errno,
+                                  "Don't know how to remove inode");
+            }
+
+            atomic_and(&heal->bad, ~ans->mask, memory_order_seq_cst);
+
+            continue;
+        }
+        if (args->buf.ia_type == IA_IFDIR)
+        {
+            ida_heal_rmdir(heal, ans->mask, IDA_USE_DFC, 1, &heal->loc, 0,
+                           heal->xdata);
         }
         else
         {
-            ida_heal_copy(local);
+            ida_heal_unlink(heal, ans->mask, IDA_USE_DFC, 1, &heal->loc, 0,
+                            heal->xdata);
         }
+    } while (item->next != &req->answers);
+}
+
+void ida_heal_prepare(ida_heal_t * heal, ida_request_t * req)
+{
+    ida_private_t * ida;
+    struct list_head * item;
+    ida_answer_t * ans;
+    SYS_GF_CBK_CALL_TYPE(lookup) * args;
+    char txt1[65], txt2[65];
+
+    ida = heal->xl->private;
+
+    ida_heal_show_msg(heal, heal->mask, 0, "Healing from %s to %s",
+                      to_bin(txt1, sizeof(txt1), heal->good, ida->nodes),
+                      to_bin(txt2, sizeof(txt2), heal->bad, ida->nodes));
+
+    item = req->answers.next;
+    do
+    {
+        item = item->next;
+        ans = list_entry(item, ida_answer_t, list);
+        args = (SYS_GF_CBK_CALL_TYPE(lookup) *)((uintptr_t *)ans +
+                                                IDA_ANS_SIZE);
+        if ((args->op_ret < 0) ||
+            (heal->iatt.ia_ino != args->buf.ia_ino) ||
+            (heal->iatt.ia_type != args->buf.ia_type) ||
+            (heal->iatt.ia_size != args->buf.ia_size) ||
+            (uuid_compare(heal->iatt.ia_gfid, args->buf.ia_gfid) != 0))
+        {
+            ida_heal_show_msg(heal, ans->mask, 0, "Needs data heal");
+
+            if (args->op_ret < 0)
+            {
+                if (args->op_errno != ENOENT)
+                {
+                    ida_heal_show_msg(heal, ans->mask, args->op_errno,
+                                      "Don't know how to heal this error");
+
+                    atomic_and(&heal->bad, ~ans->mask, memory_order_seq_cst);
+                }
+            }
+            else
+            {
+                if (args->buf.ia_type == IA_IFDIR)
+                {
+                    ida_heal_rmdir(heal, ans->mask, IDA_USE_DFC, 1, &heal->loc,
+                                   0, heal->xdata);
+                }
+                else if (args->buf.ia_type != IA_IFREG)
+                {
+                    ida_heal_unlink(heal, ans->mask, IDA_USE_DFC, 1,
+                                    &heal->loc, 0, heal->xdata);
+                }
+                else
+                {
+                    atomic_or(&heal->open, ans->mask, memory_order_seq_cst);
+                    ida_heal_truncate(heal, ans->mask, IDA_USE_DFC, 1,
+                                      &heal->loc, 0, heal->xdata);
+                }
+            }
+        }
+        else
+        {
+            ida_heal_metadata_xattr_get(heal);
+        }
+    } while (item->next != &req->answers);
+}
+
+bool ida_heal_readlink_handler(ida_heal_t * heal, ida_request_t * req,
+                               uintptr_t * data, err_t error)
+{
+    ida_answer_t * ans;
+    SYS_GF_CBK_CALL_TYPE(readlink) * args;
+    uintptr_t bad;
+
+    SYS_PTR(
+        &ans, ida_heal_check_basic, (heal, req, error, &bad),
+        ENODATA,
+        E(),
+        RETVAL(false)
+    );
+
+    args = (SYS_GF_CBK_CALL_TYPE(readlink) *)data;
+
+    SYS_ALLOC(
+        &heal->symlink, args->buf.ia_size + 1, sys_mt_uint8_t,
+        E(),
+        RETVAL(false)
+    );
+    memcpy(heal->symlink, args->path, args->buf.ia_size);
+    heal->symlink[args->buf.ia_size] = 0;
+
+    heal->good &= ans->mask;
+    if (bad != 0)
+    {
+        atomic_or(&heal->bad, bad, memory_order_seq_cst);
+
+        ida_heal_unlink(heal, bad, IDA_USE_DFC, 1, &heal->loc, 0, heal->xdata);
+    }
+
+    return false;
+}
+
+IDA_HEAL_FOP(
+    ida_heal_readlink, readlink,
+    ida_dispatch_all,
+    ida_heal_readlink_handler,
+    ida_default_answer_handler,
+    ida_default_end_handler
+)
+
+bool ida_heal_check_state(ida_heal_t * heal, ida_request_t * req,
+                          uintptr_t * data, err_t error)
+{
+    ida_answer_t * ans;
+    SYS_GF_CBK_CALL_TYPE(lookup) * args;
+    uintptr_t bad;
+
+    SYS_PTR(
+        &ans, ida_heal_check_basic, (heal, req, error, &bad),
+        ENODATA,
+        E(),
+        RETVAL(false)
+    );
+
+    if (bad == 0)
+    {
+        logI("Nothing to heal");
+
+        return false;
+    }
+
+    heal->good = ans->mask;
+    heal->available = ans->mask;
+    heal->bad = bad;
+
+    args = (SYS_GF_CBK_CALL_TYPE(lookup) *)data;
+    if (args->op_ret < 0)
+    {
+        if ((args->op_errno == ENOENT) || (args->op_errno == ENOTDIR))
+        {
+            ida_heal_remove(heal, req);
+        }
+        else
+        {
+            ida_heal_show_msg(heal, ans->mask, args->op_errno,
+                              "Don't know how to heal this error");
+
+            atomic_and(&heal->bad, ~ans->mask, memory_order_seq_cst);
+        }
+    }
+    else
+    {
+        sys_iatt_acquire(&heal->iatt, &args->buf);
+        if (args->buf.ia_type == IA_IFLNK)
+        {
+            ida_heal_readlink(heal, heal->good, IDA_USE_DFC, 1, &heal->loc,
+                              heal->iatt.ia_size, heal->xdata);
+        }
+
+        ida_heal_prepare(heal, req);
+    }
+
+    return false;
+}
+
+IDA_HEAL_FOP(
+    ida_heal_lookup_start, lookup,
+    ida_dispatch_all,
+    ida_heal_check_state,
+    ida_default_answer_handler,
+    ida_default_end_handler
+)
+
+IDA_HEAL_FOP(
+    ida_heal_setattr, setattr,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_default_answer_handler,
+    ida_default_end_handler
+)
+
+void ida_heal_metadata_attr_set(ida_heal_t * heal, struct iatt * iatt)
+{
+    ida_heal_setattr(heal, heal->bad, IDA_USE_DFC, 1, &heal->loc, iatt,
+                     GF_SET_ATTR_MODE | GF_SET_ATTR_UID | GF_SET_ATTR_GID |
+                     GF_SET_ATTR_ATIME | GF_SET_ATTR_MTIME, heal->xdata);
+    heal->bad = 0;
+}
+
+bool ida_heal_stat_handler(ida_heal_t * heal, ida_request_t * req,
+                           uintptr_t * data, err_t error)
+{
+    ida_answer_t * ans;
+    SYS_GF_CBK_CALL_TYPE(stat) * args;
+    uintptr_t bad;
+
+    SYS_PTR(
+        &ans, ida_heal_check_basic, (heal, req, error, &bad),
+        ENODATA,
+        E(),
+        RETVAL(false)
+    );
+
+    if (bad != 0)
+    {
+        atomic_and(&heal->good, ~bad, memory_order_seq_cst);
+        atomic_or(&heal->bad, bad, memory_order_seq_cst);
+    }
+
+    args = (SYS_GF_CBK_CALL_TYPE(stat) *)data;
+    if (args->op_ret < 0)
+    {
+        ida_heal_show_msg(heal, ans->mask, args->op_errno,
+                          "Unable to heal inode attributes");
+
+        atomic_and(&heal->bad, ~ans->mask, memory_order_seq_cst);
+    }
+    else
+    {
+        ida_heal_metadata_attr_set(heal, &args->buf);
+    }
+
+    return false;
+}
+
+IDA_HEAL_FOP(
+    ida_heal_stat, stat,
+    ida_dispatch_all,
+    ida_heal_stat_handler,
+    ida_default_answer_handler,
+    ida_default_end_handler
+)
+
+void ida_heal_metadata_attr_get(ida_heal_t * heal)
+{
+    if ((heal->flags & IDA_HEAL_FLAG_DATA) != 0)
+    {
+        ida_heal_stat(heal, heal->good, IDA_USE_DFC, 1, &heal->loc,
+                      heal->xdata);
+    }
+    else
+    {
+        ida_heal_metadata_attr_set(heal, &heal->iatt);
     }
 }
 
-void ida_heal_create(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
+IDA_HEAL_FOP(
+    ida_heal_setxattr, setxattr,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_heal_skip_bad,
+    ida_heal_metadata_attr_get
+)
+
+void ida_heal_metadata_xattr_set(ida_heal_t * heal, dict_t * dict)
 {
-    ida_inode_ctx_t * ctx;
+    ida_heal_setxattr(heal, heal->bad, IDA_USE_DFC, 1, &heal->loc, dict, 0,
+                      heal->xdata);
+}
+
+bool ida_heal_getxattr_handler(ida_heal_t * heal, ida_request_t * req,
+                               uintptr_t * data, err_t error)
+{
+    ida_answer_t * ans;
+    SYS_GF_CBK_CALL_TYPE(getxattr) * args;
+    uintptr_t bad;
+
+    SYS_PTR(
+        &ans, ida_heal_check_basic, (heal, req, error, &bad),
+        ENODATA,
+        E(),
+        RETVAL(false)
+    );
+
+    if (bad != 0)
+    {
+        atomic_and(&heal->good, ~bad, memory_order_seq_cst);
+        atomic_or(&heal->bad, bad, memory_order_seq_cst);
+    }
+
+    args = (SYS_GF_CBK_CALL_TYPE(getxattr) *)data;
+    if (args->op_ret < 0)
+    {
+        ida_heal_show_msg(heal, ans->mask, args->op_errno,
+                          "Unable to heal inode extended attributes");
+
+        atomic_and(&heal->bad, ~ans->mask, memory_order_seq_cst);
+    }
+    else
+    {
+        ida_heal_metadata_xattr_set(heal, args->dict);
+    }
+
+    return false;
+}
+
+IDA_HEAL_FOP(
+    ida_heal_getxattr, getxattr,
+    ida_dispatch_all,
+    ida_heal_getxattr_handler,
+    ida_default_answer_handler,
+    ida_default_end_handler
+)
+
+void ida_heal_metadata_xattr_get(ida_heal_t * heal)
+{
+    ida_heal_getxattr(heal, heal->good, IDA_USE_DFC, 1, &heal->loc, NULL,
+                      heal->xdata);
+}
+
+IDA_HEAL_FOP(
+    ida_heal_symlink, symlink,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_heal_skip_bad,
+    ida_heal_metadata_xattr_get
+)
+
+IDA_HEAL_FOP(
+    ida_heal_mkdir, mkdir,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_heal_skip_bad,
+    ida_heal_metadata_xattr_get
+)
+
+IDA_HEAL_FOP(
+    ida_heal_mknod, mknod,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_heal_skip_bad,
+    ida_heal_metadata_xattr_get
+)
+
+void ida_heal_set_good(ida_heal_t * heal, int32_t op_ret, int32_t op_errno,
+                       uintptr_t mask, void * data)
+{
+    SYS_GF_CBK_CALL_TYPE(open) * args;
+    ida_fd_ctx_t * fd_ctx;
+    uint64_t value;
+
+    if (op_ret < 0)
+    {
+        ida_heal_show_msg(heal, mask, op_errno,
+                          "Unable to reopen fd's on damaged inode fragments");
+    }
+    else
+    {
+        atomic_or(&heal->available, mask, memory_order_seq_cst);
+
+        args = (SYS_GF_CBK_CALL_TYPE(open) *)data;
+
+        LOCK(&args->fd->lock);
+
+        if ((__fd_ctx_get(args->fd, heal->xl, &value) == 0) && (value != 0))
+        {
+            fd_ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+            fd_ctx->mask |= mask;
+        }
+
+        UNLOCK(&args->fd->lock);
+    }
+}
+
+IDA_HEAL_FOP(
+    ida_heal_open, open,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_heal_set_good,
+    ida_default_end_handler
+)
+
+bool ida_heal_open_handler(ida_heal_t * heal, ida_request_t * req,
+                           uintptr_t * data, err_t error)
+{
+    ida_answer_t * ans;
+    SYS_GF_CBK_CALL_TYPE(open) * args;
+    uintptr_t bad;
+
+    SYS_PTR(
+        &ans, ida_heal_check_basic, (heal, req, error, &bad),
+        ENODATA,
+        E(),
+        RETVAL(false)
+    );
+
+    if (bad != 0)
+    {
+        atomic_and(&heal->good, ~bad, memory_order_seq_cst);
+        atomic_or(&heal->flags, IDA_HEAL_FLAG_RETRY, memory_order_seq_cst);
+    }
+
+    args = (SYS_GF_CBK_CALL_TYPE(open) *)data;
+    if (args->op_ret < 0)
+    {
+        ida_heal_show_msg(heal, ans->mask, args->op_errno,
+                          "Unable to open heal source files");
+
+        heal->bad = 0;
+    }
+
+    return false;
+}
+
+void ida_heal_open_bad(ida_heal_t * heal, int32_t op_ret, int32_t op_errno,
+                       uintptr_t mask, void * data)
+{
+    fd_t * fd;
+    ida_fd_ctx_t * fd_ctx;
+    uint64_t value;
+
+    if (op_ret < 0)
+    {
+        ida_heal_show_msg(heal, mask, op_errno,
+                          "Unable to heal some fragments");
+
+        atomic_and(&heal->bad, ~mask, memory_order_seq_cst);
+    }
+    else
+    {
+        LOCK(&heal->loc.inode->lock);
+
+        list_for_each_entry(fd, &heal->loc.inode->fd_list, inode_list)
+        {
+            if ((fd_ctx_get(fd, heal->xl, &value) == 0) && (value != 0))
+            {
+                fd_ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+                mask &= ~fd_ctx->mask;
+                if (mask != 0)
+                {
+                    ida_heal_open(heal, mask, IDA_USE_DFC, 1, &heal->loc,
+                                  fd_ctx->flags, fd, NULL);
+                }
+            }
+        }
+
+        UNLOCK(&heal->loc.inode->lock);
+    }
+}
+
+IDA_HEAL_FOP(
+    ida_heal_open_src, open,
+    ida_dispatch_all,
+    ida_heal_open_handler,
+    ida_default_answer_handler,
+    ida_default_end_handler
+)
+
+IDA_HEAL_FOP(
+    ida_heal_open_dst, open,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_heal_open_bad,
+    ida_default_end_handler
+)
+
+IDA_HEAL_FOP(
+    ida_heal_create, create,
+    ida_dispatch_all,
+    ida_default_request_handler,
+    ida_heal_open_bad,
+    ida_default_end_handler
+)
+
+err_t ida_heal_fd_create(xlator_t * xl, loc_t * loc, pid_t pid, fd_t ** fd)
+{
+    fd_t * tmp;
+    err_t error;
+
+    SYS_PTR(
+        &tmp, fd_create, (loc->inode, pid),
+        ENOMEM,
+        E(),
+        RETERR()
+    );
+
+    SYS_CALL(
+        ida_fd_ctx_create, (tmp, xl, loc),
+        E(),
+        GOTO(failed, &error)
+    );
+
+    *fd = tmp;
+
+    return 0;
+
+failed:
+    fd_unref(tmp);
+
+    return error;
+}
+
+bool ida_heal_rebuild(ida_heal_t * heal)
+{
+    ida_private_t * ida;
     dict_t * xdata;
-    uint8_t * data;
+    uintptr_t bad, aux;
 
-    gf_log(local->xl->name, GF_LOG_DEBUG, "create local: local=%p, private=%p, nodes=%u", local, local->private, local->private->nodes);
+    bad = heal->bad;
+    heal->bad = 0;
 
-    ctx = local->inode_ctx;
-    if (error == 0)
+    if (heal->iatt.ia_type == IA_IFLNK)
     {
-        xdata = dict_new();
-        if (unlikely(xdata == NULL))
+        ida_heal_symlink(heal, bad, IDA_USE_DFC, 1, heal->symlink, &heal->loc,
+                         0, heal->xdata);
+    }
+    else if (heal->iatt.ia_type == IA_IFDIR)
+    {
+        ida_heal_mkdir(heal, bad, IDA_USE_DFC, 1, &heal->loc,
+                       st_mode_from_ia(heal->iatt.ia_prot, IA_INVAL), 0,
+                       heal->xdata);
+    }
+    else if (heal->iatt.ia_type == IA_IFREG)
+    {
+        SYS_CALL(
+            ida_heal_fd_create, (heal->xl, &heal->loc, heal->frame->root->pid,
+                                 &heal->fd_dst),
+            E(),
+            RETVAL(false)
+        );
+        SYS_CALL(
+            ida_heal_fd_create, (heal->xl, &heal->loc, heal->frame->root->pid,
+                                 &heal->fd_src),
+            E(),
+            GOTO(failed)
+        );
+
+        heal->flags |= IDA_HEAL_FLAG_DATA;
+        heal->bad = bad;
+
+        ida = heal->xl->private;
+
+        ida_heal_open_src(heal, heal->good, heal->txn, ida->fragments,
+                          &heal->loc, O_RDONLY, heal->fd_src, NULL);
+
+        aux = heal->open & bad;
+        if (aux != 0)
         {
-            gf_log(local->xl->name, GF_LOG_ERROR, "Failed to create a dict_t");
-
-            ida_heal_unref(ctx);
-
-            return;
+            ida_heal_open_dst(heal, aux, heal->txn, 1, &heal->loc, O_RDWR,
+                              heal->fd_dst, NULL);
+            bad &= ~aux;
         }
-        data = GF_MALLOC(16, gf_ida_mt_uint8_t);
-        if (unlikely(data == NULL))
+        if (bad != 0)
         {
-            gf_log(local->xl->name, GF_LOG_ERROR, "Failed to create a gfid");
-
-            dict_unref(xdata);
-            ida_heal_unref(ctx);
-
-            return;
+            xdata = NULL;
+            SYS_CALL(
+                sys_dict_set_uuid,(&xdata, "gfid-req", heal->loc.gfid, NULL),
+                E(),
+                GOTO(failed_xdata)
+            );
+            ida_heal_create(heal, bad, heal->txn, 1, &heal->loc, 0,
+                            st_mode_from_ia(heal->iatt.ia_prot, IA_INVAL), 0,
+                            heal->fd_dst, xdata);
+            sys_dict_release(xdata);
         }
-        memcpy(data, ctx->heal.gfid, 16);
-        error = ida_dict_set_bin_cow(&xdata, "gfid-req", data, 16);
-        if (unlikely(error != 0))
-        {
-            gf_log(local->xl->name, GF_LOG_ERROR, "Failed to set GFID into xdata");
-
-            GF_FREE(data);
-            dict_unref(xdata);
-            ida_heal_unref(ctx);
-
-            return;
-        }
-        error = ida_dict_set_uint32_cow(&xdata, HEAL_KEY_FLAGS, 1);
-        if (unlikely(error != 0))
-        {
-            gf_log(local->xl->name, GF_LOG_ERROR, "Failed to set heal flags into xdata");
-
-            GF_FREE(data);
-            dict_unref(xdata);
-            ida_heal_unref(ctx);
-
-            return;
-        }
-        error = ida_dict_set_uint64_cow(&xdata, HEAL_KEY_SIZE, ctx->size);
-        if (unlikely(error != 0))
-        {
-            gf_log(local->xl->name, GF_LOG_ERROR, "Failed to set heal size into xdata");
-
-            GF_FREE(data);
-            dict_unref(xdata);
-            ida_heal_unref(ctx);
-
-            return;
-        }
-        ctx->heal.dst = fd_create(ctx->heal.inode, local->frame->root->pid);
-        if (ctx->heal.dst == NULL)
-        {
-            gf_log(local->xl->name, GF_LOG_ERROR, "Failed to create a fd");
-
-            dict_unref(xdata);
-            ida_heal_unref(ctx);
-
-            return;
-        }
-        error = ida_nest_create(local, sys_bits_count64(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_write, &ctx->heal.loc, O_CREAT | O_TRUNC | O_RDWR, ctx->heal.mode, 0, ctx->heal.dst, xdata);
-        if (unlikely(error != 0))
-        {
-            gf_log(local->xl->name, GF_LOG_ERROR, "Failed to create destinations for healing");
-
-            ida_heal_unref(ctx);
-        }
-        dict_unref(xdata);
     }
     else
     {
-        ida_heal_unref(ctx);
+        ida_heal_mknod(heal, bad, IDA_USE_DFC, 1, &heal->loc,
+                       st_mode_from_ia(heal->iatt.ia_prot, IA_INVAL),
+                       heal->iatt.ia_rdev, 0, heal->xdata);
     }
+
+    return true;
+
+failed_xdata:
+    fd_unref(heal->fd_src);
+    heal->fd_src = NULL;
+failed:
+    fd_unref(heal->fd_dst);
+    heal->fd_dst = NULL;
+
+    return false;
 }
 
-void ida_heal_link(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args)
+SYS_ASYNC_DEFINE(ida_heal_start, ((ida_heal_t *, heal)))
 {
-    ida_inode_ctx_t * ctx;
-    loc_t loc;
+    xlator_t * xl;
+    ida_private_t * ida;
+    err_t error;
 
-    gf_log(local->xl->name, GF_LOG_DEBUG, "link local: %s", local->manager.name);
+    xl = heal->xl;
+    ida = xl->private;
 
-    ctx = local->inode_ctx;
-    if ((error == 0) && ((args->result >= 0) || (args->code == ENOENT)))
-    {
-        memset(&loc, 0, sizeof(loc));
-        memcpy(&loc.gfid, ctx->heal.gfid, 16);
-        ida_ref(local);
-        error = ida_nest_link(local, sys_bits_count64(ctx->heal.dst_mask), ctx->heal.dst_mask, ida_heal_create, &loc, &ctx->heal.loc, NULL);
-        if (unlikely(error != 0))
-        {
-            gf_log(local->xl->name, GF_LOG_ERROR, "Failed to link destinations for healing");
+    ida_heal_cleanup(heal);
+    heal->available = heal->mask = ida->xl_up;
+    heal->refs = 0;
 
-            ida_heal_unref(ctx);
-        }
-    }
-    else
-    {
-        ida_heal_unref(ctx);
-    }
+    SYS_CALL(
+        dfc_begin, (ida->dfc, heal->mask, heal->loc.inode, NULL, &heal->txn),
+        E(),
+        LOG(E(), "Unable to initiate a transaction for healing"),
+        RETURN()
+    );
+
+    SYS_CALL(
+        dfc_attach, (heal->txn, 0, &heal->xdata),
+        E(),
+        GOTO(failed, &error)
+    );
+
+    ida_heal_lookup_start(heal, heal->mask, IDA_USE_DFC, ida->fragments,
+                          &heal->loc, heal->xdata);
+
+    return;
+
+failed:
+    dfc_failed(heal->txn, sys_bits_count64(heal->mask));
+
+    ida_heal_destroy(heal);
 }
 
-void ida_heal_start(ida_local_t * local, ida_args_cbk_t * args, uintptr_t mask)
+void ida_heal_loc(xlator_t * xl, loc_t * loc)
 {
-    ida_inode_ctx_t * ctx;
-    int32_t error;
-    loc_t loc;
+    uint64_t value;
+    inode_t * inode;
+    ida_heal_t * heal;
+    ida_private_t * ida;
 
-    ctx = local->inode_ctx;
-    if (__sync_lock_test_and_set(&ctx->heal.healing, 1) != 0)
+    inode = loc->inode;
+
+    LOCK(&inode->lock);
+
+    if ((__inode_ctx_get(inode, xl, &value) != 0) || (value == 0))
     {
-        gf_log(local->xl->name, GF_LOG_DEBUG, "Already healing");
+        SYS_MALLOC0(
+            &heal, ida_mt_ida_heal_t,
+            E(),
+            GOTO(failed)
+        );
+        heal->xl = xl;
+        sys_loc_acquire(&heal->loc, loc);
+        if (uuid_is_null(heal->loc.gfid))
+        {
+            uuid_copy(heal->loc.gfid, inode->gfid);
+        }
+        SYS_PTR(
+            &heal->frame, create_frame, (xl, xl->ctx->pool),
+            ENOMEM,
+            E(),
+            GOTO(failed_heal)
+        );
+        heal->frame->local = heal;
+        ida = xl->private;
+        heal->available = ida->xl_up;
 
-        return;
-    }
-    local->healing = 1;
-    ctx->heal.refs = 2;
-    ctx->heal.error = 0;
+        value = (uint64_t)(uintptr_t)heal;
+        SYS_CODE(
+            __inode_ctx_set, (inode, xl, &value),
+            ENOMEM,
+            E(),
+            LOG(E(), "Unable to store healing information in inode context"),
+            GOTO(failed_frame)
+        );
 
-    gf_log(local->xl->name, GF_LOG_DEBUG, "healing local: %s", local->manager.name);
+        UNLOCK(&inode->lock);
 
-    if (uuid_is_null(args->lookup.inode->gfid))
-    {
-        memcpy(ctx->heal.gfid, args->lookup.attr.ia_gfid, 16);
+        logI("Initiating self-heal");
+
+        SYS_ASYNC(ida_heal_start, (heal));
     }
     else
     {
-        memcpy(ctx->heal.gfid, args->lookup.inode->gfid, 16);
+        UNLOCK(&inode->lock);
     }
 
-    ida_loc_assign(local, &ctx->heal.loc, &local->args.lookup.loc);
-    ctx->heal.inode = inode_ref(args->lookup.inode);
-    ctx->heal.dst_mask = mask;
-    ctx->heal.src_mask = args->mixed_mask;
-    ctx->heal.size = (iobpool_default_pagesize((struct iobuf_pool *)local->xl->ctx->iobuf_pool) / (16 * IDA_GF_BITS * local->private->fragments)) * (16 * IDA_GF_BITS * local->private->fragments);
-    ctx->heal.mode = st_mode_from_ia(args->lookup.attr.ia_prot, args->lookup.attr.ia_type);
-    gf_log(local->xl->name, GF_LOG_DEBUG, "Starting heal on nodes %lX", mask);
-    ida_ref(local);
-    error = ida_nest_unlink(local, sys_bits_count64(mask), mask, ida_heal_link, &local->args.lookup.loc, 0, NULL);
-    if (unlikely(error != 0))
-    {
-        gf_log(local->xl->name, GF_LOG_ERROR, "Failed to remove destinations for healing");
+    return;
 
-        ida_heal_free(ctx);
+failed_frame:
+    STACK_DESTROY(heal->frame->root);
+failed_heal:
+    sys_loc_release(&heal->loc);
+    SYS_FREE(heal);
+failed:
+    UNLOCK(&inode->lock);
+}
+
+void ida_heal(xlator_t * xl, loc_t * loc1, loc_t * loc2, fd_t * fd)
+{
+    uint64_t value;
+    ida_fd_ctx_t * fd_ctx;
+
+    if ((loc1 != NULL) && (loc1->inode != NULL))
+    {
+        ida_heal_loc(xl, loc1);
     }
-    else
+    else if (fd != NULL)
     {
-        ctx->heal.src = fd_create(args->lookup.inode, local->frame->root->pid);
-        if (ctx->heal.src == NULL)
+        if ((fd_ctx_get(fd, xl, &value) == 0) && (value != 0))
         {
-            gf_log(local->xl->name, GF_LOG_ERROR, "Failed to create a fd");
-
-            ida_heal_unref(ctx);
-
-            return;
+            fd_ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+            ida_heal_loc(xl, &fd_ctx->loc);
         }
-        loc_copy(&loc, &local->args.lookup.loc);
-        inode_unref(loc.inode);
-        loc.inode = inode_ref(args->lookup.inode);
-        memcpy(loc.gfid, ctx->heal.gfid, 16);
-        error = ida_nest_open(local, sys_bits_count64(args->mixed_mask), args->mixed_mask, ida_heal_read, &loc, O_RDONLY, ctx->heal.src, NULL);
-        loc_wipe(&loc);
-        if (unlikely(error != 0))
-        {
-            gf_log(local->xl->name, GF_LOG_ERROR, "Failed to open sources for healing");
-
-            ida_heal_unref(ctx);
-
-            return;
-        }
+    }
+    if ((loc2 != NULL) && (loc2->inode != NULL))
+    {
+        ida_heal_loc(xl, loc2);
     }
 }

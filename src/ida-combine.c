@@ -23,6 +23,7 @@
 
 #include "ida.h"
 #include "ida-common.h"
+#include "ida-mem-types.h"
 #include "ida-type-loc.h"
 #include "ida-type-dict.h"
 #include "ida-type-inode.h"
@@ -32,6 +33,40 @@
 #include "ida-type-statvfs.h"
 #include "ida-manager.h"
 #include "ida-rabin.h"
+
+bool ida_error_check(char * fop, int32_t dst_ret, int32_t src_ret,
+                     int32_t dst_errno, int32_t src_errno,
+                     dict_t * dst_xdata, dict_t * src_xdata)
+{
+    if (dst_ret != src_ret)
+    {
+        logW("Mismatching return code in answers of '%s': %d <-> %d",
+             fop, dst_ret, src_ret);
+
+        return false;
+    }
+    if (dst_ret == 0)
+    {
+        if (!ida_dict_compare(dst_xdata, src_xdata))
+        {
+            logW("Mismatching xdata in answers of '%s'", fop);
+
+            return false;
+        }
+    }
+    else
+    {
+        if (dst_errno != src_errno)
+        {
+            logW("Mismatching errno code in answers of '%s': %d <-> %d",
+                 fop, dst_errno, src_errno);
+
+            return false;
+        }
+    }
+
+    return true;
+}
 
 bool ida_prepare_access(ida_private_t * ida, ida_request_t * req)
 {
@@ -47,8 +82,8 @@ bool ida_combine_access(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(access) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(access) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("access", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -92,8 +127,8 @@ bool ida_combine_create(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(create) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(create) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("create", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -124,9 +159,9 @@ int32_t ida_rebuild_create(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(create) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->buf);
-        ida_iatt_rebuild(ida, &args->preparent);
-        ida_iatt_rebuild(ida, &args->postparent);
+        ida_iatt_rebuild(ida, &args->buf, ans->count);
+        ida_iatt_rebuild(ida, &args->preparent, ans->count);
+        ida_iatt_rebuild(ida, &args->postparent, ans->count);
     }
 
     return 0;
@@ -146,8 +181,8 @@ bool ida_combine_flush(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(flush) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(flush) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("flush", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -176,8 +211,8 @@ bool ida_combine_fsync(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(fsync) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(fsync) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("fsync", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -205,8 +240,8 @@ int32_t ida_rebuild_fsync(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(fsync) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->prebuf);
-        ida_iatt_rebuild(ida, &args->postbuf);
+        ida_iatt_rebuild(ida, &args->prebuf, ans->count);
+        ida_iatt_rebuild(ida, &args->postbuf, ans->count);
     }
 
     return 0;
@@ -226,8 +261,8 @@ bool ida_combine_fsyncdir(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(fsyncdir) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(fsyncdir) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("fsyncdir", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -256,8 +291,8 @@ bool ida_combine_link(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(link) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(link) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("link", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -288,9 +323,9 @@ int32_t ida_rebuild_link(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(link) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->buf);
-        ida_iatt_rebuild(ida, &args->preparent);
-        ida_iatt_rebuild(ida, &args->postparent);
+        ida_iatt_rebuild(ida, &args->buf, ans->count);
+        ida_iatt_rebuild(ida, &args->preparent, ans->count);
+        ida_iatt_rebuild(ida, &args->postparent, ans->count);
     }
 
     return 0;
@@ -310,8 +345,8 @@ bool ida_combine_lk(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(lk) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(lk) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("lk", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -344,8 +379,8 @@ bool ida_combine_inodelk(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(inodelk) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(inodelk) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("inodelk", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -373,8 +408,8 @@ bool ida_combine_finodelk(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(finodelk) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(finodelk) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("finodelk", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -402,8 +437,8 @@ bool ida_combine_entrylk(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(entrylk) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(entrylk) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("entrylk", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -431,8 +466,8 @@ bool ida_combine_fentrylk(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(fentrylk) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(fentrylk) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("fentrylk", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -503,10 +538,9 @@ bool ida_combine_lookup(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(lookup) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(lookup) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("lookup", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
-        logW("Answers differ");
         return false;
     }
 
@@ -548,8 +582,18 @@ int32_t ida_rebuild_lookup(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(lookup) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->buf);
-        ida_iatt_rebuild(ida, &args->postparent);
+        ida_iatt_rebuild(ida, &args->buf, ans->count);
+        ida_iatt_rebuild(ida, &args->postparent, ans->count);
+
+        if (req->loc1.inode != args->inode)
+        {
+            sys_inode_release(req->loc1.inode);
+            sys_inode_acquire(&req->loc1.inode, args->inode);
+        }
+        if (uuid_is_null(req->loc1.gfid))
+        {
+            uuid_copy(req->loc1.gfid, args->buf.ia_gfid);
+        }
 
         size = SIZE_MAX;
         for (i = 0, item = ans;
@@ -638,8 +682,8 @@ bool ida_combine_mkdir(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(mkdir) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(mkdir) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("mkdir", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -670,9 +714,9 @@ int32_t ida_rebuild_mkdir(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(mkdir) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->buf);
-        ida_iatt_rebuild(ida, &args->preparent);
-        ida_iatt_rebuild(ida, &args->postparent);
+        ida_iatt_rebuild(ida, &args->buf, ans->count);
+        ida_iatt_rebuild(ida, &args->preparent, ans->count);
+        ida_iatt_rebuild(ida, &args->postparent, ans->count);
     }
 
     return 0;
@@ -693,8 +737,8 @@ bool ida_combine_mknod(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(mknod) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(mknod) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("mknod", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -725,10 +769,81 @@ int32_t ida_rebuild_mknod(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(mknod) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->buf);
-        ida_iatt_rebuild(ida, &args->preparent);
-        ida_iatt_rebuild(ida, &args->postparent);
+        ida_iatt_rebuild(ida, &args->buf, ans->count);
+        ida_iatt_rebuild(ida, &args->preparent, ans->count);
+        ida_iatt_rebuild(ida, &args->postparent, ans->count);
     }
+
+    return 0;
+}
+
+err_t ida_fd_ctx_create(fd_t * fd, xlator_t * xl, loc_t * loc)
+{
+    uint64_t value;
+    ida_fd_ctx_t * ctx;
+    err_t error;
+
+    SYS_MALLOC0(
+        &ctx, ida_mt_ida_fd_ctx_t,
+        E(),
+        RETERR()
+    );
+    SYS_CODE(
+        loc_copy, (&ctx->loc, loc),
+        ENOMEM,
+        E(),
+        GOTO(failed, &error)
+    );
+    value = (uint64_t)(uintptr_t)ctx;
+    SYS_CODE(
+        fd_ctx_set, (fd, xl, value),
+        ENOSPC,
+        E(),
+        GOTO(failed_loc, &error)
+    );
+
+    return 0;
+
+failed_loc:
+    loc_wipe(&ctx->loc);
+failed:
+    SYS_FREE(ctx);
+
+    return error;
+}
+
+err_t ida_fd_ctx_set(fd_t * fd, xlator_t * xl, uint32_t flags)
+{
+    ida_fd_ctx_t * fd_ctx;
+    uint64_t value;
+
+    SYS_TEST(
+        (fd_ctx_get(fd, xl, &value) == 0) && (value != 0),
+        EINVAL,
+        E(),
+        RETERR()
+    );
+    fd_ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+
+    fd_ctx->flags = flags;
+
+    return 0;
+}
+
+err_t ida_fd_ctx_update(fd_t * fd, xlator_t * xl, uintptr_t mask)
+{
+    ida_fd_ctx_t * fd_ctx;
+    uint64_t value;
+
+    SYS_TEST(
+        (fd_ctx_get(fd, xl, &value) == 0) && (value != 0),
+        EINVAL,
+        E(),
+        RETERR()
+    );
+    fd_ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+
+    fd_ctx->mask = mask;
 
     return 0;
 }
@@ -738,6 +853,12 @@ bool ida_prepare_open(ida_private_t * ida, ida_request_t * req)
     SYS_GF_FOP_CALL_TYPE(open) * args;
 
     args = (SYS_GF_FOP_CALL_TYPE(open) *)((uintptr_t *)req + IDA_REQ_SIZE);
+
+    SYS_CALL(
+        ida_fd_ctx_set, (args->fd, ida->xl, args->flags),
+        E(),
+        RETVAL(false)
+    );
 
     if ((args->flags & O_ACCMODE) == O_WRONLY)
     {
@@ -756,8 +877,8 @@ bool ida_combine_open(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(open) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(open) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("open", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -776,6 +897,19 @@ bool ida_combine_open(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
 int32_t ida_rebuild_open(ida_private_t * ida, ida_request_t * req,
                          ida_answer_t * ans)
 {
+    SYS_GF_CBK_CALL_TYPE(open) * args;
+
+    args = (SYS_GF_CBK_CALL_TYPE(open) *)((uintptr_t *)ans + IDA_ANS_SIZE);
+
+    if (args->op_ret >= 0)
+    {
+        SYS_CALL(
+            ida_fd_ctx_update, (args->fd, ida->xl, ans->mask),
+            E(),
+            RETVAL(-1)
+        );
+    }
+
     return 0;
 }
 
@@ -793,8 +927,8 @@ bool ida_combine_opendir(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(opendir) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(opendir) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("opendir", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -830,8 +964,8 @@ bool ida_combine_rchecksum(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(rchecksum) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(rchecksum) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("rchecksum", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -847,6 +981,21 @@ int32_t ida_rebuild_rchecksum(ida_private_t * ida, ida_request_t * req,
 
 bool ida_prepare_readdir(ida_private_t * ida, ida_request_t * req)
 {
+    uint64_t value;
+    ida_fd_ctx_t * fd_ctx;
+
+    SYS_CODE(
+        fd_ctx_get, (req->fd, ida->xl, &value),
+        EINVAL,
+        E(),
+        RETVAL(false)
+    );
+    fd_ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+    if (fd_ctx->data != 0)
+    {
+        req->bad = ~fd_ctx->data;
+    }
+
     return true;
 }
 
@@ -859,8 +1008,8 @@ bool ida_combine_readdir(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(readdir) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(readdir) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("readdir", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -873,14 +1022,24 @@ int32_t ida_rebuild_readdir(ida_private_t * ida, ida_request_t * req,
 {
     SYS_GF_CBK_CALL_TYPE(readdir) * args;
     gf_dirent_t * entry;
+    ida_fd_ctx_t * fd_ctx;
+    uint64_t value;
 
     args = (SYS_GF_CBK_CALL_TYPE(readdir) *)((uintptr_t *)ans + IDA_ANS_SIZE);
 
     if (args->op_ret >= 0)
     {
+        SYS_CODE(
+            fd_ctx_get, (req->fd, ida->xl, &value),
+            EINVAL,
+            E(),
+            RETVAL(-1)
+        );
+        fd_ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+        fd_ctx->data = ans->mask;
         list_for_each_entry(entry, &args->entries.list, list)
         {
-            ida_iatt_rebuild(ida, &entry->d_stat);
+            ida_iatt_rebuild(ida, &entry->d_stat, 1);
         }
     }
 
@@ -889,6 +1048,21 @@ int32_t ida_rebuild_readdir(ida_private_t * ida, ida_request_t * req,
 
 bool ida_prepare_readdirp(ida_private_t * ida, ida_request_t * req)
 {
+    uint64_t value;
+    ida_fd_ctx_t * fd_ctx;
+
+    SYS_CODE(
+        fd_ctx_get, (req->fd, ida->xl, &value),
+        EINVAL,
+        E(),
+        RETVAL(false)
+    );
+    fd_ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+    if (fd_ctx->data != 0)
+    {
+        req->bad = ~fd_ctx->data;
+    }
+
     return true;
 }
 
@@ -901,8 +1075,8 @@ bool ida_combine_readdirp(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(readdirp) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(readdirp) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("readdirp", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -915,14 +1089,24 @@ int32_t ida_rebuild_readdirp(ida_private_t * ida, ida_request_t * req,
 {
     SYS_GF_CBK_CALL_TYPE(readdirp) * args;
     gf_dirent_t * entry;
+    ida_fd_ctx_t * fd_ctx;
+    uint64_t value;
 
     args = (SYS_GF_CBK_CALL_TYPE(readdirp) *)((uintptr_t *)ans + IDA_ANS_SIZE);
 
     if (args->op_ret >= 0)
     {
+        SYS_CODE(
+            fd_ctx_get, (req->fd, ida->xl, &value),
+            EINVAL,
+            E(),
+            RETVAL(-1)
+        );
+        fd_ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+        fd_ctx->data = ans->mask;
         list_for_each_entry(entry, &args->entries.list, list)
         {
-            ida_iatt_rebuild(ida, &entry->d_stat);
+            ida_iatt_rebuild(ida, &entry->d_stat, 1);
         }
     }
 
@@ -944,8 +1128,8 @@ bool ida_combine_readlink(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(readlink) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(readlink) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("readlink", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -973,7 +1157,7 @@ int32_t ida_rebuild_readlink(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(readlink) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->buf);
+        ida_iatt_rebuild(ida, &args->buf, ans->count);
     }
 
     return 0;
@@ -1015,8 +1199,8 @@ bool ida_combine_readv(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(readv) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(readv) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("readv", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1044,6 +1228,7 @@ bool ida_combine_readv(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
 int32_t ida_rebuild_readv(ida_private_t * ida, ida_request_t * req,
                           ida_answer_t * ans)
 {
+    SYS_GF_FOP_CALL_TYPE(readv) * fop;
     SYS_GF_CBK_CALL_TYPE(readv) * args, * tmp;
     ida_answer_t * item;
     uint8_t * ptr;
@@ -1058,11 +1243,12 @@ int32_t ida_rebuild_readv(ida_private_t * ida, ida_request_t * req,
     memset(blocks, 0, sizeof(blocks));
 
     args = (SYS_GF_CBK_CALL_TYPE(readv) *)((uintptr_t *)ans + IDA_ANS_SIZE);
+
     if (args->op_ret >= 0)
     {
         struct iovec vector[args->vector.count * ida->fragments];
 
-        ida_iatt_rebuild(ida, &args->stbuf);
+        ida_iatt_rebuild(ida, &args->stbuf, ans->count);
 
         min = SIZE_MAX;
         for (i = 0, item = ans; item != NULL; i++, item = item->next)
@@ -1136,8 +1322,24 @@ int32_t ida_rebuild_readv(ida_private_t * ida, ida_request_t * req,
             iobuf_unref(iobuf);
         } while (size > 0);
 
+        for (i = 0; i < ans->count; i++)
+        {
+            SYS_FREE_ALIGNED(blocks[i]);
+        }
+
         vector[0].iov_base += req->data;
         size = min * ida->fragments - req->data;
+        fop = (SYS_GF_FOP_CALL_TYPE(readv) *)((uintptr_t *)req + IDA_REQ_SIZE);
+        max = fop->offset * ida->fragments + req->data + req->size;
+        if (max > args->stbuf.ia_size)
+        {
+            max -= args->stbuf.ia_size;
+            if (max > req->size)
+            {
+                max = req->size;
+            }
+            req->size -= max;
+        }
         while (size > req->size)
         {
             if (size - req->size >= vector[j - 1].iov_len)
@@ -1150,6 +1352,7 @@ int32_t ida_rebuild_readv(ida_private_t * ida, ida_request_t * req,
                 size = req->size;
             }
         }
+
 
         iobref_unref(args->iobref);
         args->iobref = iobref;
@@ -1190,8 +1393,8 @@ bool ida_combine_rename(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(rename) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(rename) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("rename", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1231,11 +1434,11 @@ int32_t ida_rebuild_rename(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(rename) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->buf);
-        ida_iatt_rebuild(ida, &args->preoldparent);
-        ida_iatt_rebuild(ida, &args->postoldparent);
-        ida_iatt_rebuild(ida, &args->prenewparent);
-        ida_iatt_rebuild(ida, &args->postnewparent);
+        ida_iatt_rebuild(ida, &args->buf, ans->count);
+        ida_iatt_rebuild(ida, &args->preoldparent, ans->count);
+        ida_iatt_rebuild(ida, &args->postoldparent, ans->count);
+        ida_iatt_rebuild(ida, &args->prenewparent, ans->count);
+        ida_iatt_rebuild(ida, &args->postnewparent, ans->count);
     }
 
     return 0;
@@ -1256,8 +1459,8 @@ bool ida_combine_rmdir(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(rmdir) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(rmdir) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("rmdir", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1285,8 +1488,8 @@ int32_t ida_rebuild_rmdir(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(rmdir) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->preparent);
-        ida_iatt_rebuild(ida, &args->postparent);
+        ida_iatt_rebuild(ida, &args->preparent, ans->count);
+        ida_iatt_rebuild(ida, &args->postparent, ans->count);
     }
 
     return 0;
@@ -1307,8 +1510,8 @@ bool ida_combine_stat(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(stat) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(stat) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("stat", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1334,7 +1537,7 @@ int32_t ida_rebuild_stat(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(stat) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->buf);
+        ida_iatt_rebuild(ida, &args->buf, ans->count);
     }
 
     return 0;
@@ -1355,8 +1558,8 @@ bool ida_combine_fstat(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(fstat) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(fstat) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("fstat", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1382,7 +1585,7 @@ int32_t ida_rebuild_fstat(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(fstat) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->buf);
+        ida_iatt_rebuild(ida, &args->buf, ans->count);
     }
 
     return 0;
@@ -1403,8 +1606,8 @@ bool ida_combine_setattr(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(setattr) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(setattr) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("setattr", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1434,8 +1637,8 @@ int32_t ida_rebuild_setattr(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(setattr) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->preop_stbuf);
-        ida_iatt_rebuild(ida, &args->postop_stbuf);
+        ida_iatt_rebuild(ida, &args->preop_stbuf, ans->count);
+        ida_iatt_rebuild(ida, &args->postop_stbuf, ans->count);
     }
 
     return 0;
@@ -1456,8 +1659,8 @@ bool ida_combine_fsetattr(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(fsetattr) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(fsetattr) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("fsetattr", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1487,8 +1690,8 @@ int32_t ida_rebuild_fsetattr(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(fsetattr) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->preop_stbuf);
-        ida_iatt_rebuild(ida, &args->postop_stbuf);
+        ida_iatt_rebuild(ida, &args->preop_stbuf, ans->count);
+        ida_iatt_rebuild(ida, &args->postop_stbuf, ans->count);
     }
 
     return 0;
@@ -1509,8 +1712,8 @@ bool ida_combine_statfs(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(statfs) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(statfs) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("statfs", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1559,8 +1762,8 @@ bool ida_combine_symlink(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(symlink) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(symlink) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("symlink", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1591,9 +1794,9 @@ int32_t ida_rebuild_symlink(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(symlink) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->buf);
-        ida_iatt_rebuild(ida, &args->preparent);
-        ida_iatt_rebuild(ida, &args->postparent);
+        ida_iatt_rebuild(ida, &args->buf, ans->count);
+        ida_iatt_rebuild(ida, &args->preparent, ans->count);
+        ida_iatt_rebuild(ida, &args->postparent, ans->count);
     }
 
     return 0;
@@ -1630,8 +1833,8 @@ bool ida_combine_truncate(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(truncate) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(truncate) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("truncate", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1659,8 +1862,8 @@ int32_t ida_rebuild_truncate(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(truncate) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->prebuf);
-        ida_iatt_rebuild(ida, &args->postbuf);
+        ida_iatt_rebuild(ida, &args->prebuf, ans->count);
+        ida_iatt_rebuild(ida, &args->postbuf, ans->count);
     }
 
     return 0;
@@ -1698,8 +1901,8 @@ bool ida_combine_ftruncate(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(ftruncate) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(ftruncate) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("ftruncate", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1728,8 +1931,8 @@ int32_t ida_rebuild_ftruncate(ida_private_t * ida, ida_request_t * req,
                                                IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->prebuf);
-        ida_iatt_rebuild(ida, &args->postbuf);
+        ida_iatt_rebuild(ida, &args->prebuf, ans->count);
+        ida_iatt_rebuild(ida, &args->postbuf, ans->count);
     }
 
     return 0;
@@ -1750,8 +1953,8 @@ bool ida_combine_unlink(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(unlink) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(unlink) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("unlink", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1779,8 +1982,8 @@ int32_t ida_rebuild_unlink(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(unlink) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->preparent);
-        ida_iatt_rebuild(ida, &args->postparent);
+        ida_iatt_rebuild(ida, &args->preparent, ans->count);
+        ida_iatt_rebuild(ida, &args->postparent, ans->count);
     }
 
     return 0;
@@ -1821,8 +2024,8 @@ bool ida_combine_writev(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(writev) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(writev) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("writev", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1850,8 +2053,8 @@ int32_t ida_rebuild_writev(ida_private_t * ida, ida_request_t * req,
     args = (SYS_GF_CBK_CALL_TYPE(writev) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     if (args->op_ret >= 0)
     {
-        ida_iatt_rebuild(ida, &args->prebuf);
-        ida_iatt_rebuild(ida, &args->postbuf);
+        ida_iatt_rebuild(ida, &args->prebuf, ans->count);
+        ida_iatt_rebuild(ida, &args->postbuf, ans->count);
 
         args->op_ret *= ida->fragments;
         args->op_ret -= req->size;
@@ -1874,8 +2077,8 @@ bool ida_combine_getxattr(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(getxattr) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(getxattr) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("getxattr", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1908,8 +2111,8 @@ bool ida_combine_fgetxattr(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(fgetxattr) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(fgetxattr) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("fgetxattr", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1942,8 +2145,8 @@ bool ida_combine_setxattr(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(setxattr) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(setxattr) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("setxattr", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -1971,8 +2174,8 @@ bool ida_combine_fsetxattr(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(fsetxattr) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(fsetxattr) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("fsetxattr", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -2001,8 +2204,9 @@ bool ida_combine_removexattr(ida_request_t * req, uint32_t idx,
                                                 IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(removexattr) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("removexattr", dst->op_ret, src->op_ret,
+                         dst->op_errno, src->op_errno, dst->xdata,
+                         src->xdata))
     {
         return false;
     }
@@ -2031,8 +2235,9 @@ bool ida_combine_fremovexattr(ida_request_t * req, uint32_t idx,
                                                  IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(fremovexattr) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("fremovexattr", dst->op_ret, src->op_ret,
+                         dst->op_errno, src->op_errno, dst->xdata,
+                         src->xdata))
     {
         return false;
     }
@@ -2060,8 +2265,8 @@ bool ida_combine_xattrop(ida_request_t * req, uint32_t idx, ida_answer_t * ans,
     dst = (SYS_GF_CBK_CALL_TYPE(xattrop) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(xattrop) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("xattrop", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -2094,8 +2299,8 @@ bool ida_combine_fxattrop(ida_request_t * req, uint32_t idx,
     dst = (SYS_GF_CBK_CALL_TYPE(fxattrop) *)((uintptr_t *)ans + IDA_ANS_SIZE);
     src = (SYS_GF_WIND_CBK_TYPE(fxattrop) *)data;
 
-    if ((dst->op_ret != src->op_ret) || (dst->op_errno != src->op_errno) ||
-        !ida_dict_compare(dst->xdata, src->xdata))
+    if (!ida_error_check("fxattrop", dst->op_ret, src->op_ret, dst->op_errno,
+                         src->op_errno, dst->xdata, src->xdata))
     {
         return false;
     }
@@ -2113,3 +2318,95 @@ int32_t ida_rebuild_fxattrop(ida_private_t * ida, ida_request_t * req,
 {
     return 0;
 }
+
+#define IDA_FOP_DISPATCH_INC incremental
+#define IDA_FOP_DISPATCH_ALL all
+#define IDA_FOP_DISPATCH_MIN minimum
+#define IDA_FOP_DISPATCH_MOD write
+
+#define IDA_GENERIC_FOP(_fop, _num) \
+    void ida_completed_##_fop(call_frame_t * frame, err_t error, \
+                              ida_request_t * req, uintptr_t * data) \
+    { \
+        if (error == 0) \
+        { \
+            sys_gf_unwind(frame, 0, 0, NULL, NULL, (uintptr_t *)req, data); \
+        } \
+        else \
+        { \
+            SYS_IO( \
+                sys_gf_##_fop##_unwind_error, (frame, error, NULL), \
+                NULL \
+            ); \
+        } \
+    } \
+    ida_answer_t * __ida_copy_##_fop( \
+                  SYS_ARGS_DECL((SYS_GF_ARGS_CBK, SYS_GF_ARGS_##_fop##_cbk))) \
+    { \
+        uintptr_t * ans; \
+        ans = SYS_GF_CBK_CALL(_fop, IDA_ANS_SIZE); \
+        return (ida_answer_t *)ans; \
+    } \
+    ida_answer_t * ida_copy_##_fop(uintptr_t * io) \
+    { \
+        SYS_GF_WIND_CBK_TYPE(_fop) * args; \
+        args = (SYS_GF_WIND_CBK_TYPE(_fop) *)io; \
+        return __ida_copy_##_fop( \
+                   SYS_ARGS_LOAD( \
+                       args, \
+                       (SYS_GF_ARGS_CBK, SYS_GF_ARGS_##_fop##_cbk) \
+                   ) \
+               ); \
+    } \
+    ida_handlers_t ida_handlers_##_fop = \
+    { \
+        .prepare   = SYS_GLUE(ida_prepare_, _fop), \
+        .dispatch  = SYS_GLUE(ida_dispatch_, IDA_FOP_DISPATCH_##_num), \
+        .completed = SYS_GLUE(ida_completed_, _fop), \
+        .combine   = SYS_GLUE(ida_combine_, _fop), \
+        .rebuild   = SYS_GLUE(ida_rebuild_, _fop), \
+        .copy      = SYS_GLUE(ida_copy_, _fop), \
+    }
+
+IDA_GENERIC_FOP(access,       INC);
+IDA_GENERIC_FOP(create,       ALL);
+IDA_GENERIC_FOP(entrylk,      ALL);
+IDA_GENERIC_FOP(fentrylk,     ALL);
+IDA_GENERIC_FOP(flush,        ALL);
+IDA_GENERIC_FOP(fsync,        ALL);
+IDA_GENERIC_FOP(fsyncdir,     ALL);
+IDA_GENERIC_FOP(getxattr,     INC);
+IDA_GENERIC_FOP(fgetxattr,    INC);
+IDA_GENERIC_FOP(inodelk,      ALL);
+IDA_GENERIC_FOP(finodelk,     ALL);
+IDA_GENERIC_FOP(link,         ALL);
+IDA_GENERIC_FOP(lk,           ALL);
+IDA_GENERIC_FOP(lookup,       ALL);
+IDA_GENERIC_FOP(mkdir,        ALL);
+IDA_GENERIC_FOP(mknod,        ALL);
+IDA_GENERIC_FOP(open,         ALL);
+IDA_GENERIC_FOP(opendir,      ALL);
+IDA_GENERIC_FOP(rchecksum,    MIN);
+IDA_GENERIC_FOP(readdir,      INC);
+IDA_GENERIC_FOP(readdirp,     INC);
+IDA_GENERIC_FOP(readlink,     INC);
+IDA_GENERIC_FOP(readv,        MIN);
+IDA_GENERIC_FOP(removexattr,  ALL);
+IDA_GENERIC_FOP(fremovexattr, ALL);
+IDA_GENERIC_FOP(rename,       ALL);
+IDA_GENERIC_FOP(rmdir,        ALL);
+IDA_GENERIC_FOP(setattr,      ALL);
+IDA_GENERIC_FOP(fsetattr,     ALL);
+IDA_GENERIC_FOP(setxattr,     ALL);
+IDA_GENERIC_FOP(fsetxattr,    ALL);
+IDA_GENERIC_FOP(stat,         INC);
+IDA_GENERIC_FOP(fstat,        INC);
+IDA_GENERIC_FOP(statfs,       ALL);
+IDA_GENERIC_FOP(symlink,      ALL);
+IDA_GENERIC_FOP(truncate,     ALL);
+IDA_GENERIC_FOP(ftruncate,    ALL);
+IDA_GENERIC_FOP(unlink,       ALL);
+IDA_GENERIC_FOP(writev,       MOD);
+IDA_GENERIC_FOP(xattrop,      ALL);
+IDA_GENERIC_FOP(fxattrop,     ALL);
+

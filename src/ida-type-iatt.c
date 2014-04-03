@@ -58,7 +58,7 @@ bool ida_iatt_combine(struct iatt * dst, struct iatt * src1,
     }
 
     if ((src1->ia_ino != src2->ia_ino) ||
-        ((src1->ia_ino != 1) && (src1->ia_nlink != src2->ia_nlink)) ||
+//        ((src1->ia_ino != 1) && (src1->ia_nlink != src2->ia_nlink)) ||
         (src1->ia_uid != src2->ia_uid) ||
         (src1->ia_gid != src2->ia_gid) ||
         (src1->ia_rdev != src2->ia_rdev) ||
@@ -79,11 +79,6 @@ bool ida_iatt_combine(struct iatt * dst, struct iatt * src1,
     }
 
     *dst = *src1;
-
-    if ((src1->ia_type == IA_IFREG) && (src2->ia_size > src1->ia_size))
-    {
-        dst->ia_size = src2->ia_size;
-    }
 
     dst->ia_blksize = blksize;
     dst->ia_blocks = blocks1 + blocks2;
@@ -181,6 +176,7 @@ void ida_iatt_adjust(ida_local_t * local, struct iatt * dst, dict_t * xattr, ino
 }
 */
 
-void ida_iatt_rebuild(ida_private_t * ida, struct iatt * iatt)
+void ida_iatt_rebuild(ida_private_t * ida, struct iatt * iatt, int32_t count)
 {
+    iatt->ia_blocks = (iatt->ia_blocks * ida->fragments + count - 1) / count;
 }

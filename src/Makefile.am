@@ -21,7 +21,7 @@ ida_la_SOURCES += ida-type-str.c
 ida_la_SOURCES += ida-type-md5.c
 ida_la_SOURCES += ida-type-statvfs.c
 ida_la_SOURCES += ida-type-lock.c
-#ida_la_SOURCES += ida-heal.c
+ida_la_SOURCES += ida-heal.c
 
 ida_la_LIBADD = $(gfdir)/libglusterfs/src/libglusterfs.la $(gfsys)/src/libgfsys.la $(gfdfc)/lib/libgfdfc.la
 

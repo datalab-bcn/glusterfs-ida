@@ -21,6 +21,8 @@
 #ifndef __IDA_COMBINE_H__
 #define __IDA_COMBINE_H__
 
+err_t ida_fd_ctx_create(fd_t * fd, xlator_t * xl, loc_t * loc);
+
 bool ida_prepare_access(ida_private_t * ida, ida_request_t * req);
 bool ida_prepare_create(ida_private_t * ida, ida_request_t * req);
 bool ida_prepare_entrylk(ida_private_t * ida, ida_request_t * req);

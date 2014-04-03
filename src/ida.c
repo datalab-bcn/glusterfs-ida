@@ -171,7 +171,7 @@ err_t ida_prepare_childs(xlator_t * this)
     );
 
     SYS_CALLOC0(
-        &priv->xl_list, count, gf_ida_mt_xlator_t,
+        &priv->xl_list, count, ida_mt_xlator_t,
         E(),
         RETERR()
     );
@@ -209,7 +209,7 @@ void __ida_destroy_private(xlator_t * this)
 int32_t mem_acct_init(xlator_t * this)
 {
     SYS_CODE(
-        xlator_mem_acct_init, (this, gf_ida_mt_end + 1),
+        xlator_mem_acct_init, (this, ida_mt_end + 1),
         ENOMEM,
         E(),
         LOG(E(), "Memory accounting initialization failed."),
@@ -339,7 +339,7 @@ int32_t init(xlator_t * this)
     }
 
     SYS_MALLOC0(
-        &priv, gf_ida_mt_ida_private_t,
+        &priv, ida_mt_ida_private_t,
         E(),
         RETVAL(-1)
     );
@@ -390,19 +390,8 @@ void fini(xlator_t * this)
     __ida_destroy_private(this);
 }
 
-#define IDA_FOP_MODE_INC_DIO 0
-#define IDA_FOP_MODE_INC_DFC 0
-#define IDA_FOP_MODE_ALL_DIO 0
-#define IDA_FOP_MODE_ALL_DFC 1
-#define IDA_FOP_MODE_MIN_DIO 0
-#define IDA_FOP_MODE_MIN_DFC 1
-#define IDA_FOP_MODE_MOD_DIO 0
-#define IDA_FOP_MODE_MOD_DFC 0
-
-#define IDA_FOP_DISPATCH_INC incremental
-#define IDA_FOP_DISPATCH_ALL all
-#define IDA_FOP_DISPATCH_MIN minimum
-#define IDA_FOP_DISPATCH_MOD write
+#define IDA_FOP_MODE_DIO IDA_SKIP_DFC
+#define IDA_FOP_MODE_DFC IDA_USE_DFC
 
 #define IDA_FOP_COUNT_INC 0
 #define IDA_FOP_COUNT_MIN 1
@@ -413,35 +402,21 @@ void fini(xlator_t * this)
 #define IDA_FOP_REQUIRE_MIN 2
 #define IDA_FOP_REQUIRE_ALL 3
 
-#define IDA_FOP(_fop, _num, _req, _dfc) \
-    static ida_answer_t * __ida_copy_##_fop( \
-                  SYS_ARGS_DECL((SYS_GF_ARGS_CBK, SYS_GF_ARGS_##_fop##_cbk))) \
-    { \
-        uintptr_t * ans; \
-        ans = SYS_GF_CBK_CALL(_fop, IDA_ANS_SIZE); \
-        return (ida_answer_t *)ans; \
-    } \
-    static ida_answer_t * ida_copy_##_fop(uintptr_t * io) \
-    { \
-        SYS_GF_WIND_CBK_TYPE(_fop) * args; \
-        args = (SYS_GF_WIND_CBK_TYPE(_fop) *)io; \
-        return __ida_copy_##_fop( \
-                    SYS_ARGS_LOAD( \
-                        args, \
-                        (SYS_GF_ARGS_CBK, SYS_GF_ARGS_##_fop##_cbk) \
-                    ) \
-               ); \
-    } \
-    static ida_handlers_t ida_handlers_##_fop = \
-    { \
-        .dispatch = SYS_GLUE(ida_dispatch_, IDA_FOP_DISPATCH_##_num), \
-        .combine  = SYS_GLUE(ida_combine_, _fop), \
-        .rebuild  = SYS_GLUE(ida_rebuild_, _fop), \
-        .copy     = SYS_GLUE(ida_copy_, _fop) \
-    }; \
-    SYS_ASYNC_CREATE(__ida_##_fop, ((call_frame_t *, frame), \
-                                    (xlator_t *, this), \
-                                    SYS_GF_ARGS_##_fop)) \
+#define IDA_FOP(_fop) \
+    SYS_ASYNC_DEFINE(ida_##_fop, ((call_frame_t *, frame), \
+                                  (xlator_t *, this), \
+                                  (ida_handlers_t *, handlers), \
+                                  (dfc_transaction_t *, txn), \
+                                  (uintptr_t, bad), \
+                                  (int32_t, minimum), \
+                                  (int32_t, required), \
+                                  (loc_t, loc1, PTR, sys_loc_acquire, \
+                                                     sys_loc_release), \
+                                  (loc_t, loc2, PTR, sys_loc_acquire, \
+                                                     sys_loc_release), \
+                                  (fd_t *, fd1, COPY, sys_fd_acquire, \
+                                                      sys_fd_release), \
+                                  SYS_GF_ARGS_##_fop)) \
     { \
         ida_private_t * ida; \
         ida_request_t * req; \
@@ -458,45 +433,151 @@ void fini(xlator_t * this)
             GOTO(failed) \
         ); \
         req->xl = this; \
-        req->handlers = &ida_handlers_##_fop; \
-        req->dfc = IDA_FOP_MODE_##_num##_##_dfc; \
-        req->txn = NULL; \
+        req->handlers = handlers; \
+        req->txn = txn; \
         req->last_sent = 0; \
         req->sent = 0; \
         req->failed = 0; \
         req->completed = 0; \
+        req->bad = bad; \
         req->xdata = &args->xdata; \
+        sys_loc_acquire(&req->loc1, loc1); \
+        sys_loc_acquire(&req->loc2, loc2); \
+        sys_fd_acquire(&req->fd, fd1); \
         sys_lock_initialize(&req->lock); \
         INIT_LIST_HEAD(&req->answers); \
-        if (IDA_FOP_REQUIRE_##_req == IDA_FOP_REQUIRE_ONE) \
-        { \
-            req->required = 1; \
-        } \
-        else if (IDA_FOP_REQUIRE_##_req == IDA_FOP_REQUIRE_MIN) \
-        { \
-            req->required = ida->fragments; \
-        } \
-        else \
-        { \
-            req->required = ida->nodes; \
-        } \
+        req->minimum = minimum; \
+        req->required = required; \
         req->pending = 0; \
-        if (ida_prepare_##_fop(ida, req)) \
+        if (handlers->prepare(ida, req)) \
         { \
-            ida_handlers_##_fop.dispatch(ida, req); \
+            handlers->dispatch(ida, req); \
             return; \
         } \
     failed: \
-        sys_gf_##_fop##_unwind_error(frame, EIO, NULL); \
+        handlers->completed(frame, EIO, req, NULL); \
         sys_gf_args_free((uintptr_t *)req); \
-    } \
-    int32_t ida_##_fop(call_frame_t * frame, xlator_t * xl, \
-                       SYS_ARGS_DECL((SYS_GF_ARGS_##_fop))) \
+    }
+
+IDA_FOP(access)
+IDA_FOP(create)
+IDA_FOP(entrylk)
+IDA_FOP(fentrylk)
+IDA_FOP(flush)
+IDA_FOP(fsync)
+IDA_FOP(fsyncdir)
+IDA_FOP(getxattr)
+IDA_FOP(fgetxattr)
+IDA_FOP(inodelk)
+IDA_FOP(finodelk)
+IDA_FOP(link)
+IDA_FOP(lk)
+IDA_FOP(lookup)
+IDA_FOP(mkdir)
+IDA_FOP(mknod)
+IDA_FOP(open)
+IDA_FOP(opendir)
+IDA_FOP(rchecksum)
+IDA_FOP(readdir)
+IDA_FOP(readdirp)
+IDA_FOP(readlink)
+IDA_FOP(readv)
+IDA_FOP(removexattr)
+IDA_FOP(fremovexattr)
+IDA_FOP(rename)
+IDA_FOP(rmdir)
+IDA_FOP(setattr)
+IDA_FOP(fsetattr)
+IDA_FOP(setxattr)
+IDA_FOP(fsetxattr)
+IDA_FOP(stat)
+IDA_FOP(fstat)
+IDA_FOP(statfs)
+IDA_FOP(symlink)
+IDA_FOP(truncate)
+IDA_FOP(ftruncate)
+IDA_FOP(unlink)
+IDA_FOP(writev)
+IDA_FOP(xattrop)
+IDA_FOP(fxattrop)
+
+uintptr_t ida_get_inode_bad(xlator_t * xl, inode_t * inode)
+{
+    uint64_t value;
+    ida_heal_t * heal;
+    uintptr_t bad = 0;
+
+    LOCK(&inode->lock);
+
+    if ((__inode_ctx_get(inode, xl, &value) == 0) && (value != 0))
+    {
+        heal = (ida_heal_t *)(uintptr_t)value;
+
+        bad = ~heal->available;
+    }
+
+    UNLOCK(&inode->lock);
+
+    return bad;
+}
+
+uintptr_t ida_get_bad(xlator_t * xl, loc_t * loc1, loc_t * loc2, fd_t * fd)
+{
+    uintptr_t bad = 0;
+
+    if ((loc1 != NULL) && (loc1->inode != NULL))
+    {
+        bad |= ida_get_inode_bad(xl, loc1->inode);
+    }
+    else if (fd != NULL)
+    {
+        bad |= ida_get_inode_bad(xl, fd->inode);
+    }
+    if ((loc2 != NULL) && (loc2->inode != NULL))
+    {
+        bad |= ida_get_inode_bad(xl, loc2->inode);
+    }
+
+    return bad;
+}
+
+#define IDA_GF_FOP(_fop, _req, _dfc, _loc1, _loc2, _fd) \
+    int32_t ida_gf_##_fop(call_frame_t * frame, xlator_t * xl, \
+                          SYS_ARGS_DECL((SYS_GF_ARGS_##_fop))) \
     { \
-        SYS_ASYNC(__ida_##_fop, (frame, xl, \
-                                 SYS_ARGS_NAMES((SYS_GF_ARGS_##_fop)))); \
+        int32_t required; \
+        ida_private_t * ida = xl->private; \
+        if (IDA_FOP_REQUIRE_##_req == IDA_FOP_REQUIRE_ONE) \
+        { \
+            required = 1; \
+        } \
+        else if (IDA_FOP_REQUIRE_##_req == IDA_FOP_REQUIRE_MIN) \
+        { \
+            required = ida->fragments; \
+        } \
+        else \
+        { \
+            required = ida->nodes; \
+        } \
+        if ((_fd != NULL) && (_loc1 != NULL)) \
+        { \
+            SYS_CALL( \
+                ida_fd_ctx_create, (_fd, xl, _loc1), \
+                E(), \
+                GOTO(failed) \
+            ); \
+        } \
+        SYS_ASYNC(ida_##_fop, (frame, xl, &ida_handlers_##_fop, \
+                               IDA_FOP_MODE_##_dfc, \
+                               ida_get_bad(xl, _loc1, _loc2, _fd), \
+                               ida->fragments, required, _loc1, _loc2, _fd, \
+                               SYS_ARGS_NAMES((SYS_GF_ARGS_##_fop)))); \
+        return 0; \
+    failed: \
+        ida_handlers_##_fop.completed(frame, EIO, NULL, NULL); \
         return 0; \
     }
+
 
 // Some fops need to wait for *all* answers because further operations could
 // fail in server xlator. For example, a create request could be answered as
@@ -506,95 +587,99 @@ void fini(xlator_t * this)
 // incorrect execution order)
 // TODO: Determine exactly which operations need to be fully completed before
 //       proceeding
-IDA_FOP(access,       INC, ONE, DIO)
-IDA_FOP(create,       ALL, ALL, DFC)
-IDA_FOP(entrylk,      ALL, MIN, DFC)
-IDA_FOP(fentrylk,     ALL, MIN, DFC)
-IDA_FOP(flush,        ALL, MIN, DIO)
-IDA_FOP(fsync,        ALL, MIN, DFC)
-IDA_FOP(fsyncdir,     ALL, MIN, DIO)
-IDA_FOP(getxattr,     INC, ONE, DIO)
-IDA_FOP(fgetxattr,    INC, ONE, DIO)
-IDA_FOP(inodelk,      ALL, MIN, DFC)
-IDA_FOP(finodelk,     ALL, MIN, DFC)
-IDA_FOP(link,         ALL, ALL, DFC)
-IDA_FOP(lk,           ALL, MIN, DFC)
-IDA_FOP(lookup,       ALL, ALL, DFC)
-IDA_FOP(mkdir,        ALL, ALL, DFC)
-IDA_FOP(mknod,        ALL, ALL, DFC)
-IDA_FOP(open,         ALL, ALL, DFC)
-IDA_FOP(opendir,      ALL, ALL, DFC)
-IDA_FOP(rchecksum,    MIN, MIN, DFC)
-IDA_FOP(readdir,      INC, ONE, DIO)
-IDA_FOP(readdirp,     INC, ONE, DIO)
-IDA_FOP(readlink,     INC, ONE, DIO)
-IDA_FOP(readv,        MIN, MIN, DFC)
-IDA_FOP(removexattr,  ALL, MIN, DFC)
-IDA_FOP(fremovexattr, ALL, MIN, DFC)
-IDA_FOP(rename,       ALL, ALL, DFC)
-IDA_FOP(rmdir,        ALL, ALL, DFC)
-IDA_FOP(setattr,      ALL, MIN, DFC)
-IDA_FOP(fsetattr,     ALL, MIN, DFC)
-IDA_FOP(setxattr,     ALL, MIN, DFC)
-IDA_FOP(fsetxattr,    ALL, MIN, DFC)
-IDA_FOP(stat,         INC, ONE, DIO)
-IDA_FOP(fstat,        INC, ONE, DIO)
-IDA_FOP(statfs,       ALL, ALL, DIO)
-IDA_FOP(symlink,      ALL, ALL, DFC)
-IDA_FOP(truncate,     ALL, MIN, DFC)
-IDA_FOP(ftruncate,    ALL, MIN, DFC)
-IDA_FOP(unlink,       ALL, ALL, DFC)
-IDA_FOP(writev,       MOD, MIN, DFC)
-IDA_FOP(xattrop,      ALL, MIN, DFC)
-IDA_FOP(fxattrop,     ALL, MIN, DFC)
+IDA_GF_FOP(access,       ONE, DIO, loc,    NULL,   NULL)
+IDA_GF_FOP(create,       ALL, DFC, loc,    NULL,   fd)
+IDA_GF_FOP(entrylk,      MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(fentrylk,     MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(flush,        MIN, DIO, NULL,   NULL,   fd)
+IDA_GF_FOP(fsync,        MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(fsyncdir,     MIN, DIO, NULL,   NULL,   fd)
+IDA_GF_FOP(getxattr,     ONE, DIO, loc,    NULL,   NULL)
+IDA_GF_FOP(fgetxattr,    ONE, DIO, NULL,   NULL,   fd)
+IDA_GF_FOP(inodelk,      MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(finodelk,     MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(link,         MIN, DFC, oldloc, newloc, NULL)
+IDA_GF_FOP(lk,           MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(lookup,       MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(mkdir,        ALL, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(mknod,        ALL, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(open,         ALL, DFC, loc,    NULL,   fd)
+IDA_GF_FOP(opendir,      ALL, DFC, loc,    NULL,   fd)
+IDA_GF_FOP(rchecksum,    MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(readdir,      ONE, DIO, NULL,   NULL,   fd)
+IDA_GF_FOP(readdirp,     ONE, DIO, NULL,   NULL,   fd)
+IDA_GF_FOP(readlink,     ONE, DIO, loc,    NULL,   NULL)
+IDA_GF_FOP(readv,        MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(removexattr,  MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(fremovexattr, MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(rename,       ALL, DFC, oldloc, newloc, NULL)
+IDA_GF_FOP(rmdir,        MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(setattr,      MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(fsetattr,     MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(setxattr,     MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(fsetxattr,    MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(stat,         ONE, DIO, loc,    NULL,   NULL)
+IDA_GF_FOP(fstat,        ONE, DIO, NULL,   NULL,   fd)
+IDA_GF_FOP(statfs,       ALL, DIO, loc,    NULL,   NULL)
+IDA_GF_FOP(symlink,      MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(truncate,     MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(ftruncate,    MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(unlink,       MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(writev,       MIN, DFC, NULL,   NULL,   fd)
+IDA_GF_FOP(xattrop,      MIN, DFC, loc,    NULL,   NULL)
+IDA_GF_FOP(fxattrop,     MIN, DFC, NULL,   NULL,   fd)
 
-int32_t ida_forget(xlator_t * this, inode_t * inode)
+int32_t ida_gf_forget(xlator_t * this, inode_t * inode)
 {
-    uint64_t ctx_value;
+    uint64_t value;
     ida_inode_ctx_t * ctx;
 
-    if ((inode_ctx_del(inode, this, &ctx_value) == 0) && (ctx_value != 0))
+    if ((inode_ctx_del(inode, this, &value) == 0) && (value != 0))
     {
-        ctx = (ida_inode_ctx_t *)ctx_value;
+        ctx = (ida_inode_ctx_t *)value;
         SYS_FREE(ctx);
     }
 
     return 0;
 }
 
-int32_t ida_invalidate(xlator_t * this, inode_t * inode)
+int32_t ida_gf_invalidate(xlator_t * this, inode_t * inode)
 {
     return 0;
 }
 
-int32_t ida_release(xlator_t * this, fd_t * fd)
+int32_t ida_gf_release(xlator_t * this, fd_t * fd)
 {
-    return 0;
-}
-
-int32_t ida_releasedir(xlator_t * this, fd_t * fd)
-{
-    ida_dir_ctx_t * ctx;
     uint64_t value;
+    ida_fd_ctx_t * ctx;
 
-    if (unlikely(fd_ctx_del(fd, this, &value) != 0) || (value == 0))
+    if ((fd_ctx_del(fd, this, &value) == 0) && (value != 0))
     {
-        logW("Releasing a directory file descriptor without context");
-    }
-    else
-    {
-        ctx = (ida_dir_ctx_t *)(uintptr_t)value;
-
-//        ida_dirent_unassign(&ctx->entries);
-
+        ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+        loc_wipe(&ctx->loc);
         SYS_FREE(ctx);
     }
 
     return 0;
 }
 
-SYS_GF_FOP_TABLE(ida);
-SYS_GF_CBK_TABLE(ida);
+int32_t ida_gf_releasedir(xlator_t * this, fd_t * fd)
+{
+    uint64_t value;
+    ida_fd_ctx_t * ctx;
+
+    if ((fd_ctx_del(fd, this, &value) == 0) && (value != 0))
+    {
+        ctx = (ida_fd_ctx_t *)(uintptr_t)value;
+        loc_wipe(&ctx->loc);
+        SYS_FREE(ctx);
+    }
+
+    return 0;
+}
+
+SYS_GF_FOP_TABLE(ida_gf);
+SYS_GF_CBK_TABLE(ida_gf);
 
 struct volume_options options[] =
 {

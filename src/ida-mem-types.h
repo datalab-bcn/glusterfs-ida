@@ -25,15 +25,16 @@
 
 enum gf_ida_mem_types_
 {
-    gf_ida_mt_ida_private_t = sys_mt_end + 1,
-    gf_ida_mt_ida_local_t,
-    gf_ida_mt_ida_dirent_node_t,
-    gf_ida_mt_ida_dir_ctx_t,
-    gf_ida_mt_ida_inode_ctx_t,
-    gf_ida_mt_ida_heal_t,
-    gf_ida_mt_xlator_t,
-    gf_ida_mt_uint8_t,
-    gf_ida_mt_end
+    ida_mt_ida_private_t = sys_mt_end + 1,
+    ida_mt_ida_local_t,
+    ida_mt_ida_dirent_node_t,
+    ida_mt_ida_dir_ctx_t,
+    ida_mt_ida_inode_ctx_t,
+    ida_mt_ida_heal_t,
+    ida_mt_xlator_t,
+    ida_mt_ida_fd_ctx_t,
+    ida_mt_uint8_t,
+    ida_mt_end
 };
 
 #endif /* __IDA_MEM_TYPES_H__ */

@@ -25,30 +25,69 @@
 #include "ida-manager.h"
 #include "ida-rabin.h"
 #include "ida-mem-types.h"
+#include "ida-heal.h"
 #include "ida.h"
+
+void ida_request_destroy(ida_request_t * req)
+{
+    ida_answer_t * ans, * tmp, * next;
+
+    STACK_DESTROY(req->rframe->root);
+
+    sys_loc_release(&req->loc1);
+    sys_loc_release(&req->loc2);
+    sys_fd_release(req->fd);
+
+    list_for_each_entry_safe(ans, tmp, &req->answers, list)
+    {
+        list_del_init(&ans->list);
+        while (ans->next != NULL)
+        {
+            next = ans->next;
+            ans->next = next->next;
+            sys_gf_args_free((uintptr_t *)next);
+        }
+        sys_gf_args_free((uintptr_t *)ans);
+    }
+
+    sys_gf_args_free((uintptr_t *)req);
+}
 
 void ida_complete(ida_request_t * req)
 {
-    ida_answer_t * ans, * tmp, * next;
+    ida_private_t * ida;
+    ida_answer_t * ans;
+    uintptr_t mask;
+    err_t error;
 
     dfc_complete(req->txn);
     if (atomic_dec(&req->pending, memory_order_seq_cst) == 1)
     {
-        STACK_DESTROY(req->rframe->root);
-
-        list_for_each_entry_safe(ans, tmp, &req->answers, list)
+        ans = list_entry(req->answers.next, ida_answer_t, list);
+        if (req->completed == 0)
         {
-            list_del_init(&ans->list);
-            while (ans->next != NULL)
+            req->completed = 1;
+            ida = req->xl->private;
+            error = EIO;
+            if (ans->count >= req->minimum)
             {
-                next = ans->next;
-                ans->next = next->next;
-                sys_gf_args_free((uintptr_t *)next);
+                if (req->handlers->rebuild(ida, req, ans) >= 0)
+                {
+                    error = 0;
+                }
             }
-            sys_gf_args_free((uintptr_t *)ans);
+
+            req->handlers->completed(req->frame, error, req,
+                                     (uintptr_t *)ans + IDA_ANS_SIZE);
         }
 
-        sys_gf_args_free((uintptr_t *)req);
+        mask = req->sent & ~ans->mask;
+        if (mask != 0)
+        {
+            ida_heal(req->xl, &req->loc1, &req->loc2, req->fd);
+        }
+
+        ida_request_destroy(req);
     }
 }
 
@@ -56,16 +95,7 @@ void ida_unwind(ida_request_t * req, err_t error, uintptr_t * data)
 {
     if (atomic_xchg(&req->completed, 1, memory_order_seq_cst) == 0)
     {
-        if (error == 0)
-        {
-            sys_gf_unwind(req->frame, 0, 0, NULL, NULL, (uintptr_t *)req,
-                          data);
-        }
-        else
-        {
-            sys_gf_unwind_error(req->frame, error, NULL, NULL, NULL,
-                                (uintptr_t *)req, data);
-        }
+        req->handlers->completed(req->frame, error, req, data);
     }
 }
 
@@ -74,7 +104,6 @@ SYS_LOCK_CREATE(__ida_dispatch_cbk, ((uintptr_t *, io),
                                      (ida_request_t *, req),
                                      (uint32_t, id)))
 {
-    SYS_GF_CBK_CALL_TYPE(access) * args;
     ida_answer_t * ans, * tmp, * final;
     struct list_head * item;
     int32_t needed, ret;
@@ -94,7 +123,7 @@ SYS_LOCK_CREATE(__ida_dispatch_cbk, ((uintptr_t *, io),
                 {
                     break;
                 }
-                item = tmp->list.prev;
+                item = item->prev;
             }
             list_del(&ans->list);
             list_add(&ans->list, item);
@@ -126,7 +155,8 @@ merged:
     }
 
     tmp = list_entry(req->answers.next, ida_answer_t, list);
-    needed = req->required - tmp->count - req->pending + 1;
+    needed = SYS_MIN(req->required, req->minimum) - tmp->count -
+             req->pending + 1;
     if (needed > 0)
     {
         req->failed |= req->last_sent & ~ tmp->mask;
@@ -140,8 +170,6 @@ merged:
     }
     else if (final != NULL)
     {
-        args = (SYS_GF_CBK_CALL_TYPE(access) *)((uintptr_t *)final +
-                                                IDA_ANS_SIZE);
         ret = req->handlers->rebuild(ida, req, final);
         if (ret >= 0)
         {
@@ -150,7 +178,6 @@ merged:
         else
         {
             logE("IDA: rebuild failed");
-            args->op_ret = ret;
             ida_unwind(req, EIO, (uintptr_t *)final + IDA_ANS_SIZE);
         }
         sys_gf_args_free((uintptr_t *)final);
@@ -223,10 +250,10 @@ void ida_dispatch_incremental(ida_private_t * ida, ida_request_t * req)
     uintptr_t mask;
     int32_t idx;
 
-    mask = ida->xl_up & ~req->sent;
+    mask = ida->xl_up & ~req->sent & ~req->bad;
     if (ida_get_childs(ida, 1, &mask) > 0)
     {
-        if (req->dfc != 0)
+        if (req->txn == IDA_USE_DFC)
         {
             SYS_CALL(
                 dfc_begin, (ida->dfc, mask, NULL, *req->xdata, &req->txn),
@@ -269,11 +296,11 @@ void ida_dispatch_all(ida_private_t * ida, ida_request_t * req)
         GOTO(failed)
     );
 
-    mask = ida->xl_up;
+    mask = ida->xl_up & ~req->bad;
     count = ida_get_childs(ida, ida->nodes, &mask);
-    if (count >= ida->fragments)
+    if (count >= req->minimum)
     {
-        if (req->dfc != 0)
+        if (req->txn == IDA_USE_DFC)
         {
             SYS_CALL(
                 dfc_begin, (ida->dfc, mask, NULL, *req->xdata, &req->txn),
@@ -306,8 +333,11 @@ void ida_dispatch_all(ida_private_t * ida, ida_request_t * req)
         return;
     }
 
-    dfc_failed(req->txn, count);
     logE("IDA: dispatch to all failed");
+
+    ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
+
+    return;
 
 failed:
     ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
@@ -318,18 +348,18 @@ void ida_dispatch_minimum(ida_private_t * ida, ida_request_t * req)
     uintptr_t mask;
     int32_t idx, i, count;
 
-    if ((req->sent != 0) && (req->dfc != 0))
+    if ((req->sent != 0) && (req->txn == IDA_SKIP_DFC))
     {
         ida_dispatch_incremental(ida, req);
 
         return;
     }
 
-    mask = ida->xl_up & ~req->failed;
-    count = ida_get_childs(ida, ida->fragments, &mask);
-    if (count == ida->fragments)
+    mask = ida->xl_up & ~req->failed & ~req->bad;
+    count = ida_get_childs(ida, req->required, &mask);
+    if (count >= req->minimum)
     {
-        if (req->dfc != 0)
+        if (req->txn == IDA_USE_DFC)
         {
             SYS_CALL(
                 dfc_begin, (ida->dfc, mask, NULL, *req->xdata, &req->txn),
@@ -360,11 +390,11 @@ void ida_dispatch_minimum(ida_private_t * ida, ida_request_t * req)
         {
             dfc_failed(req->txn, count - i);
         }
+
+        return;
     }
-    else
-    {
-        ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
-    }
+
+    ida_unwind(req, EIO, (uintptr_t *)req + IDA_REQ_SIZE);
 
     return;
 
@@ -565,10 +595,10 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
         GOTO(failed)
     );
 
-    mask = ida->xl_up;
-    count = ida_get_childs(ida, ida->nodes, &mask);
+    mask = ida->xl_up & ~req->bad;
+    count = ida_get_childs(ida, req->required, &mask);
     SYS_TEST(
-        count >= ida->fragments,
+        count >= req->minimum,
         ENODATA,
         E(),
         GOTO(failed)
@@ -586,7 +616,12 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
     tail = tmp - (size + tmp) % ida->block_size;
     size += tail;
 
-    req->data = 1 + (head > 0) + ((tail > 0) && (size > ida->block_size));
+    req->data = 1;
+    if (req->minimum >= ida->fragments)
+    {
+        req->data += (head > 0) + ((tail > 0) && (size > ida->block_size));
+    }
+
     req->flags = 0;
     SYS_ALLOC_ALIGNED(
         &buffer, size, 16, sys_mt_uint8_t,
@@ -602,44 +637,62 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
 
     if (head > 0)
     {
-        xdata = NULL;
-        SYS_CALL(
-            dfc_attach, (req->txn, 0, &xdata),
-            E(),
-            GOTO(failed_buffer)
-        );
-        SYS_IO(sys_gf_readv_wind, (req->rframe, NULL, ida->xl, args->fd,
-                                   ida->block_size, offs, 0, xdata),
-               SYS_CBK(ida_dispatch_write_readv_cbk, (ida, req, buffer,
-                                                      buffer, offs, size,
-                                                      head, tail, mask)
-                      ));
-        sys_dict_release(xdata);
+        if (req->minimum >= ida->fragments)
+        {
+            xdata = NULL;
+            SYS_CALL(
+                dfc_attach, (req->txn, 0, &xdata),
+                E(),
+                GOTO(failed_dfc)
+            );
+            SYS_IO(sys_gf_readv_wind, (req->rframe, NULL, ida->xl, args->fd,
+                                       ida->block_size, offs, 0, xdata),
+                   SYS_CBK(ida_dispatch_write_readv_cbk, (ida, req, buffer,
+                                                          buffer, offs, size,
+                                                          head, tail, mask)
+                          ));
+            sys_dict_release(xdata);
+        }
+        else
+        {
+            memset(buffer, 0, ida->block_size);
+        }
     }
 
     if ((tail > 0) && (size > ida->block_size))
     {
-        xdata = NULL;
-        SYS_CALL(
-            dfc_attach, (req->txn, 0, &xdata),
-            E(),
-            GOTO(failed_buffer)
-        );
-        SYS_IO(sys_gf_readv_wind, (req->rframe, NULL, ida->xl, args->fd,
-                                   ida->block_size,
-                                   offs + size - ida->block_size, 0, xdata),
-               SYS_CBK(ida_dispatch_write_readv_cbk, (ida, req, buffer,
-                                                      buffer + size -
-                                                      ida->block_size, offs,
-                                                      size, head, tail, mask)
-                      ));
-        sys_dict_release(xdata);
+        if (req->minimum >= ida->fragments)
+        {
+            xdata = NULL;
+            SYS_CALL(
+                dfc_attach, (req->txn, 0, &xdata),
+                E(),
+                GOTO(failed_dfc)
+            );
+            SYS_IO(sys_gf_readv_wind, (req->rframe, NULL, ida->xl, args->fd,
+                                       ida->block_size,
+                                       offs + size - ida->block_size, 0,
+                                       xdata),
+                   SYS_CBK(ida_dispatch_write_readv_cbk, (ida, req, buffer,
+                                                          buffer + size -
+                                                          ida->block_size,
+                                                          offs, size, head,
+                                                          tail, mask)
+                          ));
+            sys_dict_release(xdata);
+        }
+        else
+        {
+            memset(buffer + size - ida->block_size, 0, ida->block_size);
+        }
     }
 
     __ida_dispatch_write(ida, req, buffer, offs, size, head, tail, mask);
 
     return;
 
+failed_dfc:
+    dfc_failed(req->txn, count);
 failed_buffer:
     SYS_FREE(buffer);
 failed:

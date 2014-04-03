@@ -21,6 +21,6 @@
 #ifndef __IDA_HEAL_H__
 #define __IDA_HEAL_H__
 
-void ida_heal_start(ida_local_t * local, ida_args_cbk_t * args, uintptr_t mask);
+void ida_heal(xlator_t * xl, loc_t * loc1, loc_t * loc2, fd_t * fd);
 
 #endif /* __IDA_HEAL_H__ */

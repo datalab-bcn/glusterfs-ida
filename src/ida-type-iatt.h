@@ -29,6 +29,6 @@ bool ida_iatt_combine(struct iatt * dst, struct iatt * src1,
                       struct iatt * src2);
 void ida_iatt_adjust(ida_local_t * local, struct iatt * dst, dict_t * xattr,
                      inode_t * inode);
-void ida_iatt_rebuild(ida_private_t * ida, struct iatt * iatt);
+void ida_iatt_rebuild(ida_private_t * ida, struct iatt * iatt, int32_t count);
 
 #endif /* __IDA_IATT_C__ */

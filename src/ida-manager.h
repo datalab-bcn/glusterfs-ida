@@ -30,6 +30,11 @@
 
 #define IDA_EXECUTE_MAX INT_MIN
 
+#define IDA_SKIP_DFC ((dfc_transaction_t *)0)
+#define IDA_USE_DFC ((dfc_transaction_t *)1)
+
+#define IDA_IS_TXN(_txn) ((uintptr_t)(_txn) > 1)
+
 typedef struct
 {
     xlator_t *  xl;
@@ -70,35 +75,6 @@ typedef struct
     ida_manager_finish_f   finish;
 } ida_manager_t;
 
-typedef struct
-{
-    loc_t          loc;
-    fd_t *         fd;
-    int32_t        error;
-    ida_callback_f callback;
-    union
-    {
-        struct
-        {
-            off_t offset;
-            off_t length;
-        } inode;
-        struct
-        {
-            const char * name;
-        } entry;
-    };
-    struct
-    {
-        loc_t *        loc;
-        fd_t *         fd;
-        off_t          offset;
-        off_t          length;
-        ida_callback_f callback;
-        ssize_t        size;
-    } xattr;
-} ida_flow_t;
-
 struct _ida_local
 {
     xlator_t * xl;
@@ -121,7 +97,6 @@ struct _ida_local
     gf_lock_t lock;
     pid_t pid;
     gf_lkowner_t owner;
-    ida_flow_t flow;
     struct list_head args_groups;
     inode_t * inode;
     ida_inode_ctx_t * inode_ctx;
@@ -138,7 +113,10 @@ typedef struct _ida_handlers ida_handlers_t;
 
 struct _ida_handlers
 {
+    bool           (* prepare)(ida_private_t *, ida_request_t *);
     void           (* dispatch)(ida_private_t *, ida_request_t *);
+    void           (* completed)(call_frame_t *, err_t, ida_request_t *,
+                                 uintptr_t *);
     bool           (* combine)(ida_request_t *, uint32_t, ida_answer_t *,
                                uintptr_t *);
     int32_t        (* rebuild)(ida_private_t *, ida_request_t *,
@@ -153,6 +131,10 @@ struct _ida_request
     xlator_t *          xl;
     ida_handlers_t *    handlers;
     dfc_transaction_t * txn;
+    loc_t               loc1;
+    loc_t               loc2;
+    fd_t *              fd;
+    int32_t             minimum;
     int32_t             required;
     int32_t             pending;
     size_t              size;
@@ -161,11 +143,12 @@ struct _ida_request
     uintptr_t           sent;
     uintptr_t           last_sent;
     uintptr_t           failed;
+    uintptr_t           bad;
     dict_t **           xdata;
     sys_lock_t          lock;
     struct list_head    answers;
     int32_t             completed;
-    int32_t             dfc;
+//    int32_t             dfc;
 };
 
 struct _ida_answer
@@ -180,40 +163,67 @@ struct _ida_answer
 #define IDA_REQ_SIZE SYS_CALLS_ADJUST_SIZE(sizeof(ida_request_t))
 #define IDA_ANS_SIZE SYS_CALLS_ADJUST_SIZE(sizeof(ida_answer_t))
 
-#define ida_mask_for_each(_index, _mask) \
-    for ((_index) = (ffsll(_mask) - 1) & 127; (_index) < 64; (_index)++, (_index) += (ffsll((_mask) >> (_index)) - 1) & 127)
+#define IDA_FOP_DECLARE(_fop) \
+    SYS_ASYNC_DECLARE(ida_##_fop, ((call_frame_t *, frame), \
+                                   (xlator_t *, this), \
+                                   (ida_handlers_t *, handlers), \
+                                   (dfc_transaction_t *, txn), \
+                                   (uintptr_t, bad), \
+                                   (int32_t, minimum), \
+                                   (int32_t, required), \
+                                   (loc_t, loc1, PTR, sys_loc_acquire, \
+                                                      sys_loc_release), \
+                                   (loc_t, loc2, PTR, sys_loc_acquire, \
+                                                      sys_loc_release), \
+                                   (fd_t *, fd1, COPY, sys_fd_acquire, \
+                                                       sys_fd_release), \
+                                   SYS_GF_ARGS_##_fop)) \
+    void ida_completed_##_fop(call_frame_t * frame, err_t error, \
+                              ida_request_t * req, uintptr_t * data); \
+    ida_answer_t * ida_copy_##_fop(uintptr_t * io); \
+    extern ida_handlers_t ida_handlers_##_fop
 
-#define ida_args_cbk_for_each(_item, _local) \
-    list_for_each(_item, &(_local)->args_groups)
-
-#define ida_args_cbk_for_each_entry(_args, _local) \
-    list_for_each_entry(_args, &(_local)->args_groups, list)
-
-/*
-int32_t ida_nest(ida_local_t ** local, xlator_t * xl, call_frame_t * base, inode_t * inode, ida_manager_t * manager, int32_t required, uintptr_t mask, ida_callback_f callback);
-void ida_ref(ida_local_t * local);
-void ida_unref(ida_local_t * local);
-int32_t ida_dispatch(ida_local_t * local, int32_t index, ida_args_t * args);
-void ida_execute(ida_local_t * local);
-void ida_report(ida_local_t * local, uintptr_t mask, int32_t error, ida_args_cbk_t * args);
-ida_local_t * ida_process(ida_args_cbk_t ** args, xlator_t * xl, call_frame_t * frame, void * cookie, int32_t result, int32_t code, dict_t * xdata);
-void ida_combine(ida_local_t * local, ida_args_cbk_t * args, int32_t error);
-void ida_complete(ida_local_t * local, int32_t error);
-*/
-#define IDA_WIND(_fop, _frame, _child, _index, _cbk, _args...) \
-    STACK_WIND_COOKIE(_frame, _cbk, (void *)(uintptr_t)(_index), _child, (_child)->fops->_fop, ## _args)
-
-#define IDA_UNWIND(_fop, _frame, _result, _code, _args...) \
-    do \
-    { \
-        int32_t __tmp_code = _code; \
-        if (unlikely((_result < 0) && (__tmp_code == 0))) \
-        { \
-            gf_log_callingfn("ida", GF_LOG_ERROR, "Detected error without an error code"); \
-            __tmp_code = EIO; \
-        } \
-        STACK_UNWIND_STRICT(_fop, _frame, _result, __tmp_code, ## _args); \
-    } while (0)
+IDA_FOP_DECLARE(access);
+IDA_FOP_DECLARE(create);
+IDA_FOP_DECLARE(entrylk);
+IDA_FOP_DECLARE(fentrylk);
+IDA_FOP_DECLARE(flush);
+IDA_FOP_DECLARE(fsync);
+IDA_FOP_DECLARE(fsyncdir);
+IDA_FOP_DECLARE(getxattr);
+IDA_FOP_DECLARE(fgetxattr);
+IDA_FOP_DECLARE(inodelk);
+IDA_FOP_DECLARE(finodelk);
+IDA_FOP_DECLARE(link);
+IDA_FOP_DECLARE(lk);
+IDA_FOP_DECLARE(lookup);
+IDA_FOP_DECLARE(mkdir);
+IDA_FOP_DECLARE(mknod);
+IDA_FOP_DECLARE(open);
+IDA_FOP_DECLARE(opendir);
+IDA_FOP_DECLARE(rchecksum);
+IDA_FOP_DECLARE(readdir);
+IDA_FOP_DECLARE(readdirp);
+IDA_FOP_DECLARE(readlink);
+IDA_FOP_DECLARE(readv);
+IDA_FOP_DECLARE(removexattr);
+IDA_FOP_DECLARE(fremovexattr);
+IDA_FOP_DECLARE(rename);
+IDA_FOP_DECLARE(rmdir);
+IDA_FOP_DECLARE(setattr);
+IDA_FOP_DECLARE(fsetattr);
+IDA_FOP_DECLARE(setxattr);
+IDA_FOP_DECLARE(fsetxattr);
+IDA_FOP_DECLARE(stat);
+IDA_FOP_DECLARE(fstat);
+IDA_FOP_DECLARE(statfs);
+IDA_FOP_DECLARE(symlink);
+IDA_FOP_DECLARE(truncate);
+IDA_FOP_DECLARE(ftruncate);
+IDA_FOP_DECLARE(unlink);
+IDA_FOP_DECLARE(writev);
+IDA_FOP_DECLARE(xattrop);
+IDA_FOP_DECLARE(fxattrop);
 
 void ida_dispatch_incremental(ida_private_t * ida, ida_request_t * req);
 void ida_dispatch_all(ida_private_t * ida, ida_request_t * req);
