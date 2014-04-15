@@ -45,7 +45,7 @@ bool ida_error_check(char * fop, int32_t dst_ret, int32_t src_ret,
 
         return false;
     }
-    if (dst_ret == 0)
+    if (dst_ret >= 0)
     {
         if (!ida_dict_compare(dst_xdata, src_xdata))
         {
