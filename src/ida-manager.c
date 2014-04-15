@@ -297,7 +297,7 @@ void ida_dispatch_all(ida_private_t * ida, ida_request_t * req)
     );
 
     mask = ida->xl_up & ~req->bad;
-    count = ida_get_childs(ida, ida->nodes, &mask);
+    count = sys_bits_count64(mask);
     if (count >= req->minimum)
     {
         if (req->txn == IDA_USE_DFC)
@@ -596,7 +596,7 @@ void ida_dispatch_write(ida_private_t * ida, ida_request_t * req)
     );
 
     mask = ida->xl_up & ~req->bad;
-    count = ida_get_childs(ida, req->required, &mask);
+    count = sys_bits_count64(mask);
     SYS_TEST(
         count >= req->minimum,
         ENODATA,
